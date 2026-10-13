@@ -1,0 +1,17 @@
+{
+  "name": "study-workstation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地学习工作站：专注倒计时、灵感速记、树形学习笔记。零依赖，数据存本地 JSON 文件。",
+  "author": "qwwz @ WUST",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:no-open": "node server.js --no-open",
+    "test": "node tools/markdown-test.mjs",
+    "test:api": "node tools/smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

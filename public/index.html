@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="author" content="qwwz @ WUST">
+<title>学习工作站</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="logo">📚</span><span class="brand-name">学习工作站</span></div>
+  <nav class="tabs" id="tabs">
+    <button class="tab is-active" data-view="focus">专注</button>
+    <button class="tab" data-view="inspire">灵感</button>
+    <button class="tab" data-view="notes">笔记</button>
+  </nav>
+  <div class="topbar-right">
+    <span class="maker" id="makerTag" title="本软件由 WUST 的 qwwz 定制">由 WUST 的 qwwz 定制</span>
+    <span class="pill" id="todayStat">今日 0 分钟</span>
+    <button class="icon-btn" id="btnHelp" title="使用说明">?</button>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ======================= 专注 ======================= -->
+  <section class="view is-active" id="view-focus">
+    <div class="focus-grid">
+
+      <aside class="panel tasks-panel">
+        <div class="panel-head">
+          <h2>任务清单</h2>
+          <button class="btn primary sm" id="btnNewTask">+ 新建任务</button>
+        </div>
+        <ul class="task-list" id="taskList"></ul>
+        <div class="empty-hint" id="taskEmpty">还没有任务。点「+ 新建任务」，写下要做的事和需要的时间。</div>
+
+        <div class="panel-foot">
+          <h3>学习记录 <span class="muted" id="sessionCount"></span></h3>
+          <div class="session-list" id="sessionList"></div>
+        </div>
+      </aside>
+
+      <section class="panel timer-panel">
+        <div class="timer-idle" id="timerIdle">
+          <div class="idle-emoji">⏳</div>
+          <p class="idle-title">还没有开始计时</p>
+          <p class="idle-sub">在左边选一个任务，点「开始」进入专注。</p>
+        </div>
+
+        <div class="timer-active hidden" id="timerActive">
+          <div class="timer-task-name" id="timerTaskTitle"></div>
+          <div class="ring-wrap">
+            <svg class="ring" viewBox="0 0 220 220">
+              <circle class="ring-bg" cx="110" cy="110" r="98"></circle>
+              <circle class="ring-fg" id="ringFg" cx="110" cy="110" r="98"></circle>
+            </svg>
+            <div class="ring-center">
+              <div class="time-text" id="timeText">25:00</div>
+              <div class="time-hint" id="timeHint">剩余时间</div>
+            </div>
+          </div>
+          <div class="timer-actions">
+            <button class="btn" id="btnPause">暂停</button>
+            <button class="btn" id="btnExtend">+5 分钟</button>
+            <button class="btn primary" id="btnFinish">结束并记录</button>
+            <button class="btn danger-ghost" id="btnAbandon">放弃</button>
+          </div>
+          <p class="timer-foot" id="timerFoot"></p>
+        </div>
+      </section>
+
+    </div>
+  </section>
+
+  <!-- ======================= 灵感 ======================= -->
+  <section class="view" id="view-inspire">
+    <div class="inspire-wrap">
+      <div class="panel capture">
+        <textarea id="inspireInput" rows="3" placeholder="记下刚才那一瞬间的想法……（Ctrl + Enter 直接保存）"></textarea>
+        <div class="capture-foot">
+          <label class="check"><input type="checkbox" id="inspirePin"> 置顶这条</label>
+          <button class="btn primary" id="btnSaveInspire">保存灵感</button>
+        </div>
+      </div>
+
+      <div class="list-head">
+        <input class="input" id="inspireSearch" placeholder="搜索灵感内容…">
+        <label class="check"><input type="checkbox" id="onlyUnconverted"> 只看未转成笔记的</label>
+      </div>
+
+      <div class="inspire-list" id="inspireList"></div>
+      <div class="empty-hint" id="inspireEmpty">还没有灵感记录。想到什么就往上写，一句话也行。</div>
+    </div>
+  </section>
+
+  <!-- ======================= 笔记 ======================= -->
+  <section class="view" id="view-notes">
+    <div class="notes-grid">
+
+      <aside class="panel nb-panel">
+        <div class="panel-head">
+          <h2>笔记本</h2>
+          <button class="btn primary sm" id="btnNewNotebook">+ 新建</button>
+        </div>
+        <div class="nb-tree" id="notebookTree"></div>
+        <button class="nb-all" id="btnAllNotes">📄 全部笔记</button>
+      </aside>
+
+      <aside class="panel note-list-panel">
+        <div class="panel-head">
+          <h2 id="noteListTitle">笔记</h2>
+          <button class="btn primary sm" id="btnNewNote">+ 新建</button>
+        </div>
+        <input class="input sm" id="noteSearch" placeholder="搜索笔记…">
+        <div class="note-list" id="noteList"></div>
+      </aside>
+
+      <section class="panel editor-panel">
+        <div class="editor-empty" id="editorEmpty">
+          <div class="idle-emoji">📝</div>
+          <p>从左侧选一篇笔记，或者新建一篇。</p>
+        </div>
+
+        <div class="editor-body hidden" id="editorBody">
+          <div class="editor-head">
+            <input class="note-title" id="noteTitle" placeholder="笔记标题">
+            <div class="editor-tools">
+              <select class="select" id="noteNotebook"></select>
+              <button class="btn sm" id="btnPreview">预览</button>
+              <button class="btn sm danger-ghost" id="btnDeleteNote">删除</button>
+            </div>
+          </div>
+          <div class="note-meta" id="noteMeta"></div>
+          <textarea class="note-content" id="noteContent" placeholder="开始写……
+支持 Markdown：# 标题、- 列表、**加粗**、`代码`、> 引用"></textarea>
+          <div class="note-preview markdown hidden" id="notePreview"></div>
+          <div class="save-hint" id="saveHint">已保存</div>
+        </div>
+      </section>
+
+    </div>
+  </section>
+
+</main>
+
+<div class="toast-wrap" id="toastWrap"></div>
+<div class="modal-root hidden" id="modalRoot"></div>
+
+<script src="/markdown.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

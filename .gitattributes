@@ -1,0 +1,13 @@
+# 统一换行符，避免在不同系统上产生整文件 diff
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd.exe 解析 goto / 标签时可能出错
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
