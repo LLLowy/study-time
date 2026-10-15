@@ -60,6 +60,80 @@ async function removePortFile() {
 }
 
 /* ------------------------------------------------------------------ */
+/* 快照备份：存在 data 目录【外面】，所以就算整个 data 被删掉也还在        */
+/* ------------------------------------------------------------------ */
+
+const SNAPSHOT_ROOT = path.join(ROOT, 'backups');
+const SNAPSHOT_MARKER = path.join(SNAPSHOT_ROOT, '.last-fingerprint');
+const MAX_SNAPSHOTS = 40;
+
+/** 有没有值得备份的内容（全新空库就不必存了）。 */
+function hasContent() {
+  const t = state.tasks;
+  const i = state.inspirations;
+  const n = state.notes;
+  const h = state.health;
+  return t.tasks.length > 0 || t.sessions.length > 0 || Boolean(t.active)
+    || i.items.length > 0
+    || n.notebooks.length > 0 || n.notes.length > 0
+    || Boolean(h.profile) || h.weights.length > 0 || h.intake.length > 0
+    || h.burn.length > 0 || h.water.length > 0;
+}
+
+let lastSnapshotDir = null;
+
+/**
+ * 把当前全部数据整份快照到 backups/<时间>/ 下。
+ * 内容没变就不重复存；只保留最近 MAX_SNAPSHOTS 份。
+ */
+async function snapshotData({ force = false, quiet = true } = {}) {
+  try {
+    if (!force && !hasContent()) return null;
+    const payload = JSON.stringify({
+      tasks: state.tasks,
+      inspirations: state.inspirations,
+      notes: state.notes,
+      health: state.health,
+    });
+    const fingerprint = crypto.createHash('sha1').update(payload).digest('hex');
+
+    if (!force) {
+      try {
+        const last = (await fsp.readFile(SNAPSHOT_MARKER, 'utf8')).trim();
+        if (last === fingerprint) return null;
+      } catch { /* 还没存过 */ }
+    }
+
+    await fsp.mkdir(SNAPSHOT_ROOT, { recursive: true });
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    const dir = path.join(SNAPSHOT_ROOT, stamp);
+    await fsp.mkdir(dir, { recursive: true });
+
+    for (const [key, file] of Object.entries(FILE_OF)) {
+      await fsp.writeFile(path.join(dir, file), JSON.stringify(state[key], null, 2), 'utf8');
+    }
+    await fsp.writeFile(SNAPSHOT_MARKER, fingerprint, 'utf8');
+    lastSnapshotDir = dir;
+
+    const entries = (await fsp.readdir(SNAPSHOT_ROOT, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    for (const old of entries.slice(0, Math.max(0, entries.length - MAX_SNAPSHOTS))) {
+      await fsp.rm(path.join(SNAPSHOT_ROOT, old), { recursive: true, force: true });
+    }
+
+    if (!quiet) console.log(`   已备份到 backups\\${stamp}\\`);
+    return dir;
+  } catch (err) {
+    console.error('[备份] 快照失败：', err.message);
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 数据存储                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1063,6 +1137,7 @@ async function main() {
   const port = await listen(startPort);
   await writeStopToken();
   await writePortFile(port);
+  const snap = await snapshotData();
   const url = `http://127.0.0.1:${port}/`;
   console.log('');
   console.log('  ┌──────────────────────────────────────────────┐');
@@ -1071,16 +1146,23 @@ async function main() {
   console.log('');
   console.log(`   访问地址：${url}`);
   console.log(`   数据目录：${DATA_DIR}`);
+  if (snap) console.log(`   已快照备份：${path.relative(ROOT, snap)}`);
   console.log('');
   console.log('   本软件由 WUST 的 qwwz 定制');
   console.log('');
   console.log('   程序在后台运行，关掉浏览器或任何窗口都不会中断。');
   console.log('   要停止请双击「停止.vbs」（或按 Ctrl+C）。');
   console.log('');
+
+  // 每 5 分钟看一次，有变化就再存一份快照
+  const snapshotTimer = setInterval(() => { snapshotData(); }, 5 * 60 * 1000);
+  snapshotTimer.unref();
+
   if (!noOpen) openBrowser(url);
 }
 
 async function shutdown(code) {
+  await snapshotData({ force: true });
   await removeStopToken();
   await removePortFile();
   process.exit(code);

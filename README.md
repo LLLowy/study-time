@@ -165,6 +165,25 @@ data/
 - **恢复**：把 `_backup/` 里的某份文件改名覆盖回去就行
 - 万一某个文件坏了，程序会自动把它重命名成 `.broken-时间戳` 保留现场，然后从空白开始，不会连累其他文件
 
+### 自动快照（防止 data 整个被误删）
+
+`data/_backup` 只能防「写坏了」，防不了「整个 data 目录被删掉」。所以程序还会把**整份数据**快照到
+**`backups\`** 目录（注意：在 `data` 的**外面**）：
+
+```
+backups/
+  2026-10-15_213311/   tasks.json  notes.json  inspirations.json  health.json
+  2026-10-16_090412/
+  ...                  最多保留 40 份，内容没变就不重复存
+```
+
+- 程序**启动时**、**每 5 分钟（有改动时）**、**正常停止时**各存一份
+- 空库不存，不会堆一堆空快照
+- 手动备份 / 查看：`node tools/backup-data.mjs now` 和 `node tools/backup-data.mjs list`
+- **恢复**：把 `backups\<某个时间>\` 里的 json 文件复制回 `data\`，重启程序即可
+
+> 无论用哪种方式，`data/` 和 `backups/` 都已在 `.gitignore` 里，不会被推到 GitHub。
+
 ---
 
 ## 常见问题

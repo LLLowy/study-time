@@ -5,6 +5,9 @@
 data/*
 !data/.gitkeep
 
+# 整份快照备份（存在 data 外面，防止 data 被误删时一起没掉）
+backups/
+
 # 临时文件
 _shots/
 *.tmp
