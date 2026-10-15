@@ -199,7 +199,181 @@ async function main() {
   all = await call('GET', '/api/all');
   eq('灵感已清理', all.inspirations.some((i) => i.id === insp.id), false);
 
-  /* ---------- 5. 校验与错误处理 ---------- */
+  /* ---------- 5. 身体管理 ---------- */
+  console.log('\n【身体管理：档案与基础代谢】');
+  // 这一块需要从空白开始，所以先把已有身体数据挪走，测完再原样放回去
+  const h0 = (await call('GET', '/api/all')).health;
+  const hadCount = h0.weights.length + h0.intake.length + h0.burn.length + h0.water.length + (h0.profile ? 1 : 0);
+  if (hadCount) console.log(`  （检测到已有身体数据 ${hadCount} 条，测试会临时清空，结束时还原）`);
+  for (const r of h0.weights) await call('DELETE', `/api/health/weights/${r.id}`);
+  for (const r of h0.intake) await call('DELETE', `/api/health/intake/${r.id}`);
+  for (const r of h0.burn) await call('DELETE', `/api/health/burn/${r.id}`);
+  for (const r of h0.water) await call('DELETE', `/api/health/water/${r.id}`);
+  await call('DELETE', '/api/health/profile');
+
+  let needProfile = false;
+  try { await call('POST', '/api/health/weights', { kg: 70 }); } catch { needProfile = true; }
+  check('没填档案时拒绝记录体重', needProfile);
+
+  const prof = (await call('PUT', '/api/health/profile', {
+    gender: 'male', age: 20, heightCm: 175, activity: 'moderate',
+    targetWeightKg: 60, weightKg: 65.5,
+  })).health;
+  const expectBmrMale = Math.round(10 * 65.5 + 6.25 * 175 - 5 * 20 + 5);
+  eq('男性基础代谢（Mifflin-St Jeor）正确', prof.computed.bmr, expectBmrMale);
+  eq('每日总消耗 = BMR × 活动系数 1.55', prof.computed.tdee, Math.round(expectBmrMale * 1.55));
+  eq('BMI 正确', prof.computed.bmi, Math.round((65.5 / (1.75 * 1.75)) * 10) / 10);
+  eq('BMI 分类正确', prof.computed.bmiLabel, '正常');
+  eq('距目标体重差值正确', prof.computed.targetRemainKg, 5.5);
+  eq('活动强度档位齐全', prof.activityLevels.length, 5);
+
+  const female = (await call('PUT', '/api/health/profile', {
+    gender: 'female', age: 20, heightCm: 175, activity: 'sedentary', weightKg: 65.5,
+  })).health;
+  eq('女性基础代谢比男性低 166', female.computed.bmr, expectBmrMale - 166);
+  eq('久坐的活动系数是 1.2', female.computed.activityFactor, 1.2);
+
+  const levels = female.activityLevels.map((l) => l.factor);
+  check('活动系数从 1.2 递增到 1.9', levels[0] === 1.2 && levels[4] === 1.9);
+
+  let badGender = false;
+  try { await call('PUT', '/api/health/profile', { gender: 'x', age: 20, heightCm: 175 }); } catch { badGender = true; }
+  check('拒绝无效性别', badGender);
+  let badHeight = false;
+  try { await call('PUT', '/api/health/profile', { gender: 'male', age: 20, heightCm: 400 }); } catch { badHeight = true; }
+  check('拒绝离谱身高', badHeight);
+
+  console.log('\n【身体管理：体重记录与曲线数据】');
+  for (const r of (await call('GET', '/api/all')).health.weights) {
+    await call('DELETE', `/api/health/weights/${r.id}`);
+  }
+  await call('POST', '/api/health/weights', { kg: 66, date: '2026-01-01', note: '起点' });
+  await call('POST', '/api/health/weights', { kg: 64.5, date: '2026-01-08', note: '早上空腹' });
+  let wh = (await call('GET', '/api/all')).health;
+  eq('体重记录按日期升序返回', wh.weights[wh.weights.length - 1].kg, 64.5);
+  eq('最新体重被采用', wh.computed.latestWeightKg, 64.5);
+  eq('体重变化量正确', wh.computed.weightDelta, -1.5);
+  const sameDay = await call('POST', '/api/health/weights', { kg: 64, date: '2026-01-08' });
+  eq('同一天重复记录会覆盖原记录', sameDay.weight.id, wh.weights[wh.weights.length - 1].id);
+  wh = (await call('GET', '/api/all')).health;
+  eq('覆盖后记录条数不变', wh.weights.length, 2);
+
+  console.log('\n【身体管理：摄入 / 消耗 / 喝水】');
+  const before = (await call('GET', '/api/all')).health;
+  const i1 = (await call('POST', '/api/health/intake', { name: '米饭 1 碗', kcal: 200 })).record;
+  await call('POST', '/api/health/intake', { name: '鸡胸肉 100g', kcal: 133 });
+  const b1 = (await call('POST', '/api/health/burn', { name: '慢跑 30分钟', kcal: 240, minutes: 30 })).record;
+  await call('POST', '/api/health/water', { ml: 250 });
+  await call('POST', '/api/health/water', { ml: 500 });
+  const hh = (await call('GET', '/api/all')).health;
+  eq('今日摄入合计正确', hh.today.intakeKcal, 333);
+  eq('今日消耗合计正确', hh.today.burnKcal, 240);
+  eq('今日净摄入 = 摄入 − 消耗', hh.today.netKcal, 93);
+  eq('今日喝水合计正确', hh.today.waterMl, 750);
+  eq('消耗记录保留分钟数', b1.minutes, 30);
+  check('还能吃多少 = TDEE + 运动消耗 − 已摄入',
+    hh.today.intakeLeftKcal === hh.computed.tdee + 240 - 333,
+    `（${hh.today.intakeLeftKcal}）`);
+  check('喝水还差多少正确', hh.today.waterLeftMl === Math.max(0, hh.goals.waterMl - 750), `（${hh.today.waterLeftMl}）`);
+  eq('近 7 天统计里有 7 天', hh.week.days.length, 7);
+
+  let badKcal = false;
+  try { await call('POST', '/api/health/intake', { kcal: -5 }); } catch { badKcal = true; }
+  check('拒绝负数热量', badKcal);
+  let badMl = false;
+  try { await call('POST', '/api/health/water', { ml: 0 }); } catch { badMl = true; }
+  check('拒绝 0 毫升喝水', badMl);
+
+  const goals = (await call('PATCH', '/api/health/goals', { waterMl: 1500, burnKcal: 300 })).health;
+  eq('喝水目标可修改', goals.goals.waterMl, 1500);
+  eq('运动消耗目标可修改', goals.goals.burnKcal, 300);
+  eq('目标修改后剩余量同步', goals.today.waterLeftMl, 750);
+
+  await call('DELETE', `/api/health/intake/${i1.id}`);
+  eq('摄入记录可删除', (await call('GET', '/api/all')).health.today.intakeKcal, 133);
+
+  // 清理测试产生的东西，并把之前挪走的数据放回去
+  const after = (await call('GET', '/api/all')).health;
+  for (const r of after.intake) await call('DELETE', `/api/health/intake/${r.id}`);
+  for (const r of after.burn) await call('DELETE', `/api/health/burn/${r.id}`);
+  for (const r of after.water) await call('DELETE', `/api/health/water/${r.id}`);
+  for (const r of after.weights) await call('DELETE', `/api/health/weights/${r.id}`);
+  await call('DELETE', '/api/health/profile');
+  await call('PATCH', '/api/health/goals', { waterMl: h0.goals.waterMl, burnKcal: h0.goals.burnKcal });
+  if (h0.profile) {
+    await call('PUT', '/api/health/profile', {
+      gender: h0.profile.gender,
+      age: h0.profile.age,
+      heightCm: h0.profile.heightCm,
+      activity: h0.profile.activity,
+      targetWeightKg: h0.profile.targetWeightKg,
+    });
+  }
+  for (const w of h0.weights) await call('POST', '/api/health/weights', { kg: w.kg, date: w.date, note: w.note });
+  for (const r of h0.intake) await call('POST', '/api/health/intake', { name: r.name, kcal: r.kcal, date: r.date });
+  for (const r of h0.burn) await call('POST', '/api/health/burn', { name: r.name, kcal: r.kcal, minutes: r.minutes, date: r.date });
+  for (const r of h0.water) await call('POST', '/api/health/water', { ml: r.ml, date: r.date });
+  const cleaned = (await call('GET', '/api/all')).health;
+  eq('测试数据已清理（体重）', cleaned.weights.length, h0.weights.length);
+  eq('测试数据已清理（摄入）', cleaned.intake.length, h0.intake.length);
+  eq('测试数据已清理（喝水）', cleaned.water.length, h0.water.length);
+  eq('原有档案已还原', Boolean(cleaned.profile), Boolean(h0.profile));
+  void before;
+
+  /* ---------- 6. 学习记录删除 ---------- */
+  console.log('\n【学习记录】');
+  const rtask = (await call('POST', '/api/tasks', { title: '记录测试任务', minutes: 1 })).task;
+  await call('POST', '/api/timer/start', { taskId: rtask.id });
+  const rec = (await call('POST', '/api/timer/stop', { outcome: 'completed', note: '测试用', actualSec: 60 })).session;
+  eq('完成的记录 outcome 为 completed', rec.outcome, 'completed');
+  const rec2 = await call('POST', '/api/timer/start', { taskId: rtask.id })
+    .then(() => call('POST', '/api/timer/stop', { outcome: 'stopped', note: '', actualSec: 20 }))
+    .then((r) => r.session);
+  eq('中途结束的记录 outcome 为 stopped', rec2.outcome, 'stopped');
+  const sess = (await call('GET', '/api/all')).sessions;
+  check('两种记录都能区分出来',
+    sess.some((s) => s.id === rec.id && s.outcome === 'completed')
+    && sess.some((s) => s.id === rec2.id && s.outcome === 'stopped'));
+  await call('DELETE', `/api/sessions/${rec.id}`);
+  await call('DELETE', `/api/sessions/${rec2.id}`);
+  await call('DELETE', `/api/tasks/${rtask.id}`);
+  eq('记录可以删除', (await call('GET', '/api/all')).sessions.length - baseSessions, 2);
+  let badSession = false;
+  try { await call('DELETE', '/api/sessions/nope'); } catch { badSession = true; }
+  check('删除不存在的记录会报错', badSession);
+
+  /* ---------- 7. 灵感转笔记：标题与追加 ---------- */
+  console.log('\n【灵感转笔记】');
+  const nb = (await call('POST', '/api/notebooks', { name: '转笔记测试' })).notebook;
+  const ins2 = (await call('POST', '/api/inspirations', {
+    text: '第一行是灵感摘要\n第二行才是真正的内容\n第三行补充',
+  })).item;
+
+  const conv = await call('POST', `/api/inspirations/${ins2.id}/to-note`, { title: '第一行是灵感摘要', notebookId: nb.id });
+  eq('新建的笔记用了指定标题', conv.note.title, '第一行是灵感摘要');
+  check('标题与正文开头不再重复', !conv.note.content.startsWith('第一行是灵感摘要'),
+    `（正文开头：${JSON.stringify(conv.note.content.slice(0, 16))}）`);
+  check('正文保留下面的内容', conv.note.content.includes('第二行才是真正的内容'));
+
+  const ins3 = (await call('POST', '/api/inspirations', { text: '这条要追加到已有笔记里' })).item;
+  const appended = await call('POST', `/api/inspirations/${ins3.id}/append-to-note`, { noteId: conv.note.id });
+  check('追加的内容进了笔记末尾', appended.note.content.includes('这条要追加到已有笔记里'));
+  check('追加时保留了原有内容', appended.note.content.includes('第二行才是真正的内容'));
+  const all3 = await call('GET', '/api/all');
+  eq('两条灵感都标记了去向',
+    all3.inspirations.filter((i) => i.id === ins2.id || i.id === ins3.id).every((i) => i.convertedNoteId === conv.note.id),
+    true);
+  eq('追加不会新建笔记', all3.notes.length - baseNotes, 1);
+
+  let needNoteId = false;
+  try { await call('POST', `/api/inspirations/${ins3.id}/append-to-note`, {}); } catch { needNoteId = true; }
+  check('追加时必须指定目标笔记', needNoteId);
+
+  await call('DELETE', `/api/notebooks/${nb.id}`, {});
+  await call('DELETE', `/api/inspirations/${ins2.id}`);
+  await call('DELETE', `/api/inspirations/${ins3.id}`);
+
+  /* ---------- 8. 校验与错误处理 ---------- */
   console.log('\n【输入校验】');
   let badMinutes = false;
   try { await call('POST', '/api/tasks', { title: '测试', minutes: 0 }); } catch { badMinutes = true; }

@@ -10,6 +10,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 const ROOT = __dirname;
@@ -33,6 +34,31 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+/**
+ * 停止令牌：写在 data/.stop-token 里，「停止.vbs」读它来调用 /api/shutdown。
+ * 这样别的程序（或浏览器里打开的任意网页）没法随便把你的程序关掉。
+ */
+const STOP_TOKEN = crypto.randomBytes(24).toString('hex');
+const STOP_TOKEN_FILE = path.join(DATA_DIR, '.stop-token');
+const PORT_FILE = path.join(DATA_DIR, '.server-port');
+
+async function writeStopToken() {
+  await fsp.writeFile(STOP_TOKEN_FILE, STOP_TOKEN, 'utf8');
+}
+
+async function removeStopToken() {
+  try { await fsp.rm(STOP_TOKEN_FILE, { force: true }); } catch { /* ignore */ }
+}
+
+/** 实际监听的端口号写在 data/.server-port 里，启动/停止脚本读它，就不用挨个端口试探。 */
+async function writePortFile(port) {
+  await fsp.writeFile(PORT_FILE, String(port), 'utf8');
+}
+
+async function removePortFile() {
+  try { await fsp.rm(PORT_FILE, { force: true }); } catch { /* ignore */ }
+}
+
 /* ------------------------------------------------------------------ */
 /* 数据存储                                                            */
 /* ------------------------------------------------------------------ */
@@ -41,12 +67,22 @@ const DEFAULT_STATE = () => ({
   tasks: { version: 1, tasks: [], active: null, sessions: [] },
   inspirations: { version: 1, items: [] },
   notes: { version: 1, notebooks: [], notes: [], meta: { seeded: false } },
+  health: {
+    version: 1,
+    profile: null,
+    weights: [],
+    intake: [],
+    burn: [],
+    water: [],
+    goals: { waterMl: 2000, intakeKcal: null, burnKcal: null },
+  },
 });
 
 const FILE_OF = {
   tasks: 'tasks.json',
   inspirations: 'inspirations.json',
   notes: 'notes.json',
+  health: 'health.json',
 };
 
 const state = DEFAULT_STATE();
@@ -158,6 +194,13 @@ function findOr404(list, id, label) {
 
 const now = () => Date.now();
 
+/** 本地日期，形如 2026-10-13。用于按天分组记录（跟使用者的时区一致）。 */
+function localDate(at = Date.now()) {
+  const d = new Date(at);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 /** 列表摘要：去掉 Markdown 记号，只留正文。 */
 function excerptOf(content) {
   return String(content || '')
@@ -233,6 +276,131 @@ function finishSession({ outcome, note, actualSec }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 身体管理：基础代谢与每日统计                                        */
+/* ------------------------------------------------------------------ */
+
+/** 活动强度系数（乘在基础代谢上得到每日总消耗 TDEE）。 */
+const ACTIVITY_LEVELS = {
+  sedentary: { label: '久坐（几乎不运动）', factor: 1.2 },
+  light: { label: '轻度（每周运动 1-3 次）', factor: 1.375 },
+  moderate: { label: '中度（每周运动 3-5 次）', factor: 1.55 },
+  active: { label: '高度（每周运动 6-7 次）', factor: 1.725 },
+  athlete: { label: '极高（体力劳动 / 一天两练）', factor: 1.9 },
+};
+
+/** 中国成人 BMI 分类。 */
+function bmiLabelOf(bmi) {
+  if (!Number.isFinite(bmi)) return '';
+  if (bmi < 18.5) return '偏瘦';
+  if (bmi < 24) return '正常';
+  if (bmi < 28) return '超重';
+  return '肥胖';
+}
+
+/**
+ * 基础代谢率（Mifflin-St Jeor 公式），单位 kcal/天。
+ * 男：10×体重 + 6.25×身高 − 5×年龄 + 5
+ * 女：10×体重 + 6.25×身高 − 5×年龄 − 161
+ */
+function bmrOf({ gender, age, heightCm, weightKg }) {
+  if (![age, heightCm, weightKg].every((n) => Number.isFinite(n) && n > 0)) return null;
+  const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
+  return Math.round(gender === 'female' ? base - 161 : base + 5);
+}
+
+function sumKcal(list, date) {
+  return Math.round(list.filter((r) => r.date === date).reduce((s, r) => s + (r.kcal || 0), 0));
+}
+
+function sumMl(list, date) {
+  return Math.round(list.filter((r) => r.date === date).reduce((s, r) => s + (r.ml || 0), 0));
+}
+
+function publicHealth() {
+  const h = state.health;
+  const profile = h.profile;
+  const sorted = h.weights.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
+  const latest = sorted.length ? sorted[sorted.length - 1] : null;
+  const first = sorted.length ? sorted[0] : null;
+
+  const today = localDate();
+  const weekAgo = localDate(Date.now() - 6 * 86400000);
+
+  let computed = null;
+  if (profile && latest) {
+    const bmr = bmrOf({
+      gender: profile.gender,
+      age: profile.age,
+      heightCm: profile.heightCm,
+      weightKg: latest.kg,
+    });
+    const factor = (ACTIVITY_LEVELS[profile.activity] || ACTIVITY_LEVELS.sedentary).factor;
+    const tdee = bmr ? Math.round(bmr * factor) : null;
+    const heightM = profile.heightCm / 100;
+    const bmi = heightM > 0 ? latest.kg / (heightM * heightM) : null;
+    computed = {
+      bmr,
+      tdee,
+      activityFactor: factor,
+      bmi: bmi ? Math.round(bmi * 10) / 10 : null,
+      bmiLabel: bmiLabelOf(bmi),
+      latestWeightKg: latest.kg,
+      latestWeightDate: latest.date,
+      firstWeightKg: first.kg,
+      weightDelta: Math.round((latest.kg - first.kg) * 10) / 10,
+      targetWeightKg: profile.targetWeightKg ?? null,
+      targetRemainKg: profile.targetWeightKg != null
+        ? Math.round((latest.kg - profile.targetWeightKg) * 10) / 10
+        : null,
+    };
+  }
+
+  const todayIntake = sumKcal(h.intake, today);
+  const todayBurn = sumKcal(h.burn, today);
+  const todayWater = sumMl(h.water, today);
+
+  const days = [];
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = localDate(Date.now() - i * 86400000);
+    days.push({
+      date: d,
+      intakeKcal: sumKcal(h.intake, d),
+      burnKcal: sumKcal(h.burn, d),
+      waterMl: sumMl(h.water, d),
+    });
+  }
+
+  return {
+    profile,
+    goals: h.goals,
+    activityLevels: Object.entries(ACTIVITY_LEVELS).map(([id, v]) => ({ id, label: v.label, factor: v.factor })),
+    weights: sorted,
+    intake: h.intake.slice(0, 1000),
+    burn: h.burn.slice(0, 1000),
+    water: h.water.slice(0, 2000),
+    computed,
+    today: {
+      date: today,
+      intakeKcal: todayIntake,
+      burnKcal: todayBurn,
+      waterMl: todayWater,
+      netKcal: todayIntake - todayBurn,
+      intakeLeftKcal: computed && computed.tdee != null ? computed.tdee + todayBurn - todayIntake : null,
+      waterLeftMl: Math.max(0, (h.goals.waterMl || 0) - todayWater),
+    },
+    week: {
+      from: weekAgo,
+      to: today,
+      intakeKcal: days.reduce((s, d) => s + d.intakeKcal, 0),
+      burnKcal: days.reduce((s, d) => s + d.burnKcal, 0),
+      waterMl: days.reduce((s, d) => s + d.waterMl, 0),
+      avgIntakeKcal: Math.round(days.reduce((s, d) => s + d.intakeKcal, 0) / 7),
+      days,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* 路由                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -242,6 +410,7 @@ const route = (method, pattern, handler) => routes.push({ method, pattern, handl
 /* --- 概览 --- */
 route('GET', '/api/all', async () => ({
   serverTime: now(),
+  today: localDate(),
   tasks: state.tasks.tasks,
   active: publicActive(state.tasks.active),
   sessions: state.tasks.sessions.slice(0, 300),
@@ -252,6 +421,7 @@ route('GET', '/api/all', async () => ({
     createdAt: n.createdAt, sourceInspirationId: n.sourceInspirationId || null,
     excerpt: excerptOf(n.content),
   })),
+  health: publicHealth(),
 }));
 
 route('GET', '/api/notes/:id', async (_p, _b, params) => {
@@ -383,6 +553,14 @@ route('POST', '/api/timer/stop', async (_p, body) => {
   return { session };
 });
 
+route('DELETE', '/api/sessions/:id', async (_p, _b, params) => {
+  const idx = state.tasks.sessions.findIndex((s) => s.id === params.id);
+  if (idx < 0) throw new HttpError(404, '学习记录不存在');
+  state.tasks.sessions.splice(idx, 1);
+  persist('tasks');
+  return { ok: true };
+});
+
 /* --- 灵感 --- */
 route('POST', '/api/inspirations', async (_p, body) => {
   const text = cleanText(body.text, { max: 8000, field: '灵感内容' });
@@ -430,16 +608,36 @@ route('POST', '/api/inspirations/:id/to-note', async (_p, body, params) => {
   const title = (body.title ? cleanText(body.title, { max: 200, field: '标题' }) : '')
     || item.text.split('\n')[0].slice(0, 40)
     || '未命名笔记';
+  // 正文默认是灵感原文；如果标题就是从第一行取的，避免标题和正文开头重复
+  let content = item.text;
+  const firstLine = item.text.split('\n')[0].trim();
+  if (firstLine && title === firstLine && item.text.includes('\n')) {
+    content = item.text.slice(item.text.indexOf('\n') + 1).replace(/^\s+/, '');
+  }
   const note = {
     id: newId('n'),
     notebookId,
     title,
-    content: item.text,
+    content,
     createdAt: now(),
     updatedAt: now(),
     sourceInspirationId: item.id,
   };
   state.notes.notes.push(note);
+  item.convertedNoteId = note.id;
+  persist('notes');
+  persist('inspirations');
+  return { note: { id: note.id, notebookId: note.notebookId, title: note.title, content: note.content } };
+});
+
+/** 把灵感追加到一篇已有笔记的末尾（而不是新建笔记）。 */
+route('POST', '/api/inspirations/:id/append-to-note', async (_p, body, params) => {
+  const item = findOr404(state.inspirations.items, params.id, '灵感');
+  const note = findOr404(state.notes.notes, String(body.noteId || ''), '笔记');
+  const stamp = new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+  const block = `\n\n---\n\n**${stamp} · 来自灵感速记**\n\n${item.text}\n`;
+  note.content = (note.content || '') + block;
+  note.updatedAt = now();
   item.convertedNoteId = note.id;
   persist('notes');
   persist('inspirations');
@@ -560,6 +758,151 @@ route('DELETE', '/api/notes/:id', async (_p, _b, params) => {
   return { ok: true };
 });
 
+/* --- 身体管理 --- */
+
+/** 校验并规整一个日期参数，缺省为今天。 */
+function dateArg(v) {
+  if (v === undefined || v === null || v === '') return localDate();
+  const s = String(v);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new HttpError(400, '日期格式应为 YYYY-MM-DD');
+  return s;
+}
+
+route('PUT', '/api/health/profile', async (_p, body) => {
+  const gender = body.gender === 'female' ? 'female' : body.gender === 'male' ? 'male' : null;
+  if (!gender) throw new HttpError(400, '请选择性别');
+  const heightCm = num(body.heightCm, { min: 80, max: 250, field: '身高（厘米）' });
+  const age = num(body.age, { min: 5, max: 120, field: '年龄' });
+  const activity = ACTIVITY_LEVELS[body.activity] ? String(body.activity) : 'sedentary';
+  let targetWeightKg = null;
+  if (body.targetWeightKg !== undefined && body.targetWeightKg !== null && body.targetWeightKg !== '') {
+    targetWeightKg = num(body.targetWeightKg, { min: 20, max: 300, field: '目标体重（公斤）' });
+  }
+  const profile = {
+    gender,
+    heightCm: Math.round(heightCm * 10) / 10,
+    age: Math.round(age),
+    activity,
+    targetWeightKg,
+    updatedAt: now(),
+  };
+  state.health.profile = profile;
+  // 首次设置档案时，如果还没有任何体重记录，顺手把当前体重记上
+  if (body.weightKg !== undefined && body.weightKg !== null && body.weightKg !== '') {
+    const kg = num(body.weightKg, { min: 20, max: 300, field: '体重（公斤）' });
+    const date = dateArg(body.date);
+    const exist = state.health.weights.find((w) => w.date === date);
+    if (exist) exist.kg = kg;
+    else {
+      state.health.weights.push({ id: newId('w'), date, kg, note: '', createdAt: now() });
+    }
+  }
+  persist('health');
+  return { health: publicHealth() };
+});
+
+route('POST', '/api/health/weights', async (_p, body) => {
+  if (!state.health.profile) throw new HttpError(400, '请先填写身高体重等基本档案');
+  const kg = num(body.kg, { min: 20, max: 300, field: '体重（公斤）' });
+  const date = dateArg(body.date);
+  const note = body.note ? cleanText(body.note, { max: 200, field: '备注' }) : '';
+  const exist = state.health.weights.find((w) => w.date === date);
+  let weight;
+  if (exist) {
+    exist.kg = kg;
+    exist.note = note;
+    exist.createdAt = now();
+    weight = exist;
+  } else {
+    weight = { id: newId('w'), date, kg, note, createdAt: now() };
+    state.health.weights.push(weight);
+  }
+  persist('health');
+  return { weight, health: publicHealth() };
+});
+
+route('PATCH', '/api/health/goals', async (_p, body) => {
+  const g = state.health.goals;
+  if (body.waterMl !== undefined) g.waterMl = num(body.waterMl, { min: 0, max: 10000, field: '每日喝水目标' });
+  if (body.intakeKcal !== undefined) {
+    g.intakeKcal = body.intakeKcal === null || body.intakeKcal === ''
+      ? null
+      : num(body.intakeKcal, { min: 0, max: 20000, field: '每日摄入目标' });
+  }
+  if (body.burnKcal !== undefined) {
+    g.burnKcal = body.burnKcal === null || body.burnKcal === ''
+      ? null
+      : num(body.burnKcal, { min: 0, max: 20000, field: '每日消耗目标' });
+  }
+  persist('health');
+  return { goals: g, health: publicHealth() };
+});
+
+/** 体重 / 摄入 / 消耗 / 喝水 四类记录共用一套删除逻辑。 */
+const HEALTH_KINDS = {
+  weights: { key: 'weights', label: '体重记录' },
+  intake: { key: 'intake', label: '摄入记录' },
+  burn: { key: 'burn', label: '消耗记录' },
+  water: { key: 'water', label: '喝水记录' },
+};
+
+route('POST', '/api/health/intake', async (_p, body) => {
+  const name = cleanText(body.name || '手动填写', { max: 60, field: '名称' });
+  const kcal = num(body.kcal, { min: 0, max: 10000, field: '热量（千卡）' });
+  const rec = { id: newId('fi'), date: dateArg(body.date), name, kcal: Math.round(kcal), createdAt: now() };
+  state.health.intake.unshift(rec);
+  if (state.health.intake.length > 5000) state.health.intake.length = 5000;
+  persist('health');
+  return { record: rec, health: publicHealth() };
+});
+
+route('POST', '/api/health/burn', async (_p, body) => {
+  const name = cleanText(body.name || '手动填写', { max: 60, field: '名称' });
+  const kcal = num(body.kcal, { min: 0, max: 10000, field: '热量（千卡）' });
+  const minutes = body.minutes === undefined || body.minutes === ''
+    ? null
+    : num(body.minutes, { min: 0, max: 1440, field: '时长（分钟）' });
+  const rec = {
+    id: newId('fb'),
+    date: dateArg(body.date),
+    name,
+    kcal: Math.round(kcal),
+    minutes: minutes === null ? null : Math.round(minutes),
+    createdAt: now(),
+  };
+  state.health.burn.unshift(rec);
+  if (state.health.burn.length > 5000) state.health.burn.length = 5000;
+  persist('health');
+  return { record: rec, health: publicHealth() };
+});
+
+route('POST', '/api/health/water', async (_p, body) => {
+  const ml = num(body.ml, { min: 1, max: 5000, field: '水量（毫升）' });
+  const rec = { id: newId('dr'), date: dateArg(body.date), ml: Math.round(ml), createdAt: now() };
+  state.health.water.unshift(rec);
+  if (state.health.water.length > 5000) state.health.water.length = 5000;
+  persist('health');
+  return { record: rec, health: publicHealth() };
+});
+
+route('DELETE', '/api/health/:kind/:id', async (_p, _b, params) => {
+  const kind = HEALTH_KINDS[params.kind];
+  if (!kind) throw new HttpError(404, `没有这一类记录：${params.kind}`);
+  const list = state.health[kind.key];
+  const idx = list.findIndex((r) => r.id === params.id);
+  if (idx < 0) throw new HttpError(404, `${kind.label}不存在`);
+  list.splice(idx, 1);
+  persist('health');
+  return { health: publicHealth() };
+});
+
+route('DELETE', '/api/health/profile', async () => {
+  // 只清空档案，体重与饮食记录保留（供用户重新测量后重填）
+  state.health.profile = null;
+  persist('health');
+  return { health: publicHealth() };
+});
+
 /* ------------------------------------------------------------------ */
 /* HTTP 层                                                             */
 /* ------------------------------------------------------------------ */
@@ -643,6 +986,20 @@ const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(parsed.pathname);
   try {
+    // 优雅停止：需要 data/.stop-token 里的令牌，避免被网页随便关掉
+    if (pathname === '/api/shutdown' && req.method === 'POST') {
+      if (req.headers['x-stop-token'] !== STOP_TOKEN) {
+        throw new HttpError(403, '停止令牌不正确');
+      }
+      sendJson(res, 200, { ok: true, data: { message: '正在关闭' } });
+      setTimeout(async () => {
+        await removeStopToken();
+        console.log('\n已停止。数据均已保存到 data 目录。');
+        process.exit(0);
+      }, 250);
+      return;
+    }
+
     if (pathname.startsWith('/api/')) {
       const m = matchRoute(req.method, pathname);
       if (!m) throw new HttpError(404, `接口不存在：${req.method} ${pathname}`);
@@ -704,6 +1061,8 @@ async function main() {
 
   await loadState();
   const port = await listen(startPort);
+  await writeStopToken();
+  await writePortFile(port);
   const url = `http://127.0.0.1:${port}/`;
   console.log('');
   console.log('  ┌──────────────────────────────────────────────┐');
@@ -715,14 +1074,26 @@ async function main() {
   console.log('');
   console.log('   本软件由 WUST 的 qwwz 定制');
   console.log('');
-  console.log('   关闭这个窗口（或按 Ctrl+C）即可停止程序。');
+  console.log('   程序在后台运行，关掉浏览器或任何窗口都不会中断。');
+  console.log('   要停止请双击「停止.vbs」（或按 Ctrl+C）。');
   console.log('');
   if (!noOpen) openBrowser(url);
 }
 
+async function shutdown(code) {
+  await removeStopToken();
+  await removePortFile();
+  process.exit(code);
+}
+
 process.on('SIGINT', () => {
   console.log('\n已停止。数据均已保存到 data 目录。');
-  process.exit(0);
+  shutdown(0);
+});
+process.on('SIGTERM', () => shutdown(0));
+process.on('exit', () => {
+  try { fs.rmSync(STOP_TOKEN_FILE, { force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(PORT_FILE, { force: true }); } catch { /* ignore */ }
 });
 
 main().catch((err) => {

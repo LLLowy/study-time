@@ -13,6 +13,7 @@ const S = {
   inspirations: [],
   notebooks: [],
   notes: [],
+  health: null,
   clockOffset: 0,
   activeNoteId: null,
   editing: null,          // 当前打开的完整笔记
@@ -21,6 +22,10 @@ const S = {
   noteSearch: '',
   inspireSearch: '',
   onlyUnconverted: false,
+  recordRange: 'today',   // 'today' | 'week' | 'all'
+  fullscreen: false,
+  setupGender: 'male',
+  setupEditing: false,
   finishHandled: false,
   saveTimer: null,
   dirty: false,
@@ -196,6 +201,7 @@ async function refresh({ keepNote = true } = {}) {
   S.inspirations = data.inspirations;
   S.notebooks = data.notebooks;
   S.notes = data.notes;
+  S.health = data.health;
   if (!keepNote) S.editing = null;
   renderAll();
 }
@@ -203,22 +209,21 @@ async function refresh({ keepNote = true } = {}) {
 function renderAll() {
   renderTasks();
   renderTimer();
+  renderRecords();
   renderInspirations();
   renderNotebooks();
   renderNoteList();
   renderEditor();
+  renderBody();
   $('#todayStat').textContent = `今日 ${Math.round(todaySeconds() / 60)} 分钟`;
 }
-
-/* ---------------------------------------------------------------- */
-/* 视图切换                                                          */
-/* ---------------------------------------------------------------- */
 
 function switchView(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === name));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.id === `view-${name}`));
   if (!location.hash.startsWith(`#${name}`)) setHash(`#${name}`);
   if (name === 'notes') renderEditor();
+  if (name === 'body') renderBody();
 }
 
 function setHash(hash) {
@@ -242,8 +247,9 @@ function excerptOf(content) {
 /* 任务与计时                                                        */
 /* ---------------------------------------------------------------- */
 
+/** 只有倒计时走完（outcome === 'completed'）才算完成一次；中断的不计入。 */
 function sessionCountOf(taskId) {
-  return S.sessions.filter((s) => s.taskId === taskId).length;
+  return S.sessions.filter((s) => s.taskId === taskId && s.outcome === 'completed').length;
 }
 
 function renderTasks() {
@@ -274,22 +280,115 @@ function renderTasks() {
         </button>
       </li>`;
   }).join('');
+}
 
+/* ---------------- 学习记录 ---------------- */
+
+function recordsInRange() {
+  const list = S.sessions;
+  if (S.recordRange === 'all') return list;
+  if (S.recordRange === 'today') {
+    const t = localDateStr();
+    return list.filter((s) => localDateStr(new Date(s.endedAt)) === t);
+  }
+  const from = Date.now() - 6 * 86400000;
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  return list.filter((s) => s.endedAt >= start.getTime());
+}
+
+function localDateStr(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function renderRecords() {
+  const all = recordsInRange();
   const list = $('#sessionList');
-  $('#sessionCount').textContent = S.sessions.length ? `（共 ${S.sessions.length} 次）` : '';
-  if (!S.sessions.length) {
-    list.innerHTML = '<div class="modal-hint" style="padding:6px 2px">还没有记录。完成一次专注后会自动出现在这里。</div>';
+  const totalSec = all.reduce((s, x) => s + (x.actualSec || 0), 0);
+  const doneCount = all.filter((x) => x.outcome === 'completed').length;
+  const stopCount = all.length - doneCount;
+
+  $('#sessionCount').textContent = S.sessions.length ? `（全部 ${S.sessions.length} 条）` : '';
+  $('#recordStats').innerHTML = all.length ? `
+    <div class="stat"><span class="stat-num">${fmtMinutes(totalSec)}</span><span class="stat-label">累计时长</span></div>
+    <div class="stat"><span class="stat-num">${all.length}</span><span class="stat-label">记录条数</span></div>
+    <div class="stat"><span class="stat-num" style="color:#1f8a5b">${doneCount}</span><span class="stat-label">完整完成</span></div>
+    <div class="stat"><span class="stat-num" style="color:#b4762a">${stopCount}</span><span class="stat-label">中途中断</span></div>
+  ` : '<div class="stat"><span class="stat-label">这个时间段还没有记录。</span></div>';
+
+  if (!all.length) {
+    list.innerHTML = '<div class="record-day" style="border:0">完成一次专注后，记录会自动出现在这里。</div>';
     return;
   }
-  list.innerHTML = S.sessions.slice(0, 60).map((s) => `
-    <div>
-      <div class="session-item">
-        <span class="tag">${s.outcome === 'completed' ? '完成' : '中断'}</span>
-        <span class="s-title">${esc(s.title)}</span>
-        <span class="s-time">${fmtMinutes(s.actualSec || 0)} · ${fmtDate(s.endedAt).slice(5, 16)}</span>
+
+  let html = '';
+  let lastDay = '';
+  for (const s of all) {
+    const day = localDateStr(new Date(s.endedAt));
+    if (day !== lastDay) {
+      lastDay = day;
+      html += `<div class="record-day">${day}　${'周' + '日一二三四五六'[new Date(s.endedAt).getDay()]}</div>`;
+    }
+    const done = s.outcome === 'completed';
+    html += `
+      <div class="record-row" data-id="${s.id}">
+        <span class="r-badge ${done ? 'done' : 'stop'}">${done ? '完成' : '中断'}</span>
+        <div class="r-main">
+          <div class="r-title">${esc(s.title)}</div>
+          ${s.note ? `<div class="r-note">💭 ${esc(s.note)}</div>` : ''}
+        </div>
+        <span class="r-time">${fmtMinutes(s.actualSec || 0)} · ${fmtDate(s.endedAt).slice(11, 16)}</span>
+      </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function recordDetailModal(session) {
+  const task = S.tasks.find((t) => t.id === session.taskId);
+  const note = session.noteId ? S.notes.find((n) => n.id === session.noteId) : null;
+  const done = session.outcome === 'completed';
+  const modal = openModal(modalShell({
+    title: '学习记录详情',
+    okText: '关闭',
+    cancelText: '',
+    body: `
+      <div class="metric-grid" style="padding:0;grid-template-columns:repeat(2,1fr)">
+        <div class="metric"><span class="m-label">结果</span><span class="m-value" style="font-size:15px;color:${done ? '#1f8a5b' : '#b4762a'}">${done ? '完整完成' : '中途中断'}</span></div>
+        <div class="metric"><span class="m-label">实际专注</span><span class="m-value" style="font-size:15px">${fmtMinutes(session.actualSec || 0)}</span></div>
+        <div class="metric"><span class="m-label">计划时长</span><span class="m-value" style="font-size:15px">${fmtMinutes(session.plannedSec || 0)}</span></div>
+        <div class="metric"><span class="m-label">开始时间</span><span class="m-value" style="font-size:15px">${fmtDate(session.startedAt).slice(5, 16)}</span></div>
       </div>
-      ${s.note ? `<div class="session-note">💭 ${esc(s.note)}</div>` : ''}
-    </div>`).join('');
+      <div class="field"><label>任务</label><div>${esc(session.title)}</div></div>
+      ${task ? `<div class="modal-hint">这个任务目前完整完成 ${sessionCountOf(task.id)} 次。</div>` : ''}
+      <div class="field"><label>当时写下的心得</label><div class="detail-note">${session.note ? esc(session.note) : '（没写）'}</div></div>
+      ${note ? `<div class="field"><label>关联笔记</label><div><a href="#notes/${note.id}" data-open-note="${note.id}">📄 ${esc(note.title)}</a></div></div>` : ''}`,
+  }));
+  modal.addEventListener('click', (e) => {
+    const link = e.target.closest('[data-open-note]');
+    if (link) {
+      e.preventDefault();
+      closeModal();
+      switchView('notes');
+      openNote(link.dataset.openNote);
+      return;
+    }
+    if (e.target.closest('[data-modal]')) closeModal();
+  });
+}
+
+async function deleteRecord(session) {
+  const yes = await askConfirm({
+    title: '删除这条学习记录',
+    message: `确定删除「${esc(session.title)}」这条记录吗？删掉后它不再计入统计。`,
+    okText: '删除',
+  });
+  if (yes !== 'ok') return;
+  try {
+    await api('DELETE', `/api/sessions/${session.id}`);
+    await refresh();
+    toast('记录已删除', 'ok');
+  } catch (err) { fail(err); }
 }
 
 function remainingNow() {
@@ -303,10 +402,12 @@ function remainingNow() {
 function renderTimer() {
   const idle = $('#timerIdle');
   const active = $('#timerActive');
+  const fs = $('#fullscreenTimer');
   if (!S.active) {
     idle.classList.remove('hidden');
     active.classList.add('hidden');
     document.title = '学习工作站';
+    if (S.fullscreen) exitFullscreenTimer();
     return;
   }
   idle.classList.add('hidden');
@@ -314,11 +415,14 @@ function renderTimer() {
   $('#timerTaskTitle').textContent = S.active.taskTitle;
   const paused = S.active.pausedRemainingSec !== null && S.active.pausedRemainingSec !== undefined;
   $('#btnPause').textContent = paused ? '继续' : '暂停';
+  $('#fsPause').textContent = paused ? '继续' : '暂停';
+  $('#fsTask').textContent = S.active.taskTitle;
   const ext = S.active.extensionSec || 0;
   $('#timerFoot').textContent =
     `计划 ${Math.round(S.active.durationSec / 60)} 分钟`
     + (ext ? `（含延长 ${Math.round(ext / 60)} 分钟）` : '')
     + ` · 开始于 ${fmtDate(S.active.startedAt).slice(5, 16)}`;
+  fs.classList.toggle('hidden', !S.fullscreen);
   tickTimer();
 }
 
@@ -335,11 +439,35 @@ function tickTimer() {
   $('#timeHint').textContent = paused ? '已暂停' : (rem <= 0 ? '时间到' : '剩余时间');
   document.title = `${fmtClock(rem)} · ${S.active.taskTitle}`;
 
+  if (S.fullscreen) {
+    $('#fsTime').textContent = fmtClock(rem);
+    $('#fsHint').textContent = paused ? '已暂停' : (rem <= 0 ? '时间到' : `计划 ${Math.round(S.active.durationSec / 60)} 分钟`);
+    const spent = 1 - ratio;
+    const bar = $('#fsBar');
+    bar.style.width = `${Math.max(0, Math.min(100, spent * 100))}%`;
+    bar.classList.toggle('is-paused', paused);
+  }
+
   if (rem <= 0 && !paused && !S.finishHandled) {
     S.finishHandled = true;
     beep();
     openRecordModal('completed');
   }
+}
+
+function enterFullscreenTimer() {
+  if (!S.active) { toast('先开始一个任务再全屏吧', 'err'); return; }
+  S.fullscreen = true;
+  $('#fullscreenTimer').classList.remove('hidden');
+  tickTimer();
+  const el = document.documentElement;
+  if (el.requestFullscreen) el.requestFullscreen().catch(() => { /* 用户拒绝也没关系，页面内全屏照样用 */ });
+}
+
+function exitFullscreenTimer() {
+  S.fullscreen = false;
+  $('#fullscreenTimer').classList.add('hidden');
+  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
 }
 
 async function startTask(taskId, minutes) {
@@ -527,44 +655,109 @@ function toNoteModal(item) {
   const options = S.notebooks
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
-    .map((nb) => `<option value="${nb.id}">${esc(nb.name)}</option>`)
+    .map((nb) => `<option value="${nb.id}">${esc(notebookPath(nb.id))}</option>`)
     .join('');
-  const defaultTitle = item.text.split('\n')[0].slice(0, 40);
+  const noteOptions = S.notes
+    .slice()
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((n) => `<option value="${n.id}">${esc(n.title)}${n.notebookId ? `（${esc(notebookPath(n.notebookId))}）` : ''}</option>`)
+    .join('');
+  const suggested = item.text.split('\n')[0].slice(0, 40);
+
   const modal = openModal(modalShell({
-    title: '把灵感转成笔记',
-    okText: '创建笔记',
+    title: '把灵感处理成笔记',
+    okText: '确定',
     body: `
-      <div class="field">
-        <label>笔记标题</label>
-        <input class="input" id="tTitle" maxlength="200" value="${esc(defaultTitle)}">
+      <div class="seg" id="tMode" style="align-self:flex-start">
+        <button class="seg-btn is-active" data-mode="new">新建一篇笔记</button>
+        <button class="seg-btn" data-mode="append">追加到已有笔记</button>
       </div>
-      <div class="field">
-        <label>放到哪个笔记本</label>
-        <select class="select" id="tNb">
-          <option value="">未分类</option>
-          ${options}
-        </select>
+
+      <div id="tPaneNew">
+        <div class="field">
+          <label>笔记标题 <span style="color:var(--red)">*</span></label>
+          <input class="input" id="tTitle" maxlength="200" placeholder="自己起一个标题，别和正文一样">
+          <span class="modal-hint">建议写「这件事叫什么」，而不是把正文原样抄一遍。</span>
+        </div>
+        <div class="field">
+          <label>放到哪个笔记本</label>
+          <select class="select" id="tNb">
+            <option value="">未分类</option>
+            ${options}
+          </select>
+        </div>
       </div>
-      <div class="modal-hint">灵感原文会作为笔记正文。转好之后会自动跳到笔记页面打开它。</div>`,
+
+      <div id="tPaneAppend" class="hidden">
+        <div class="field">
+          <label>追加到哪篇笔记的末尾 <span style="color:var(--red)">*</span></label>
+          <select class="select" id="tNote">
+            <option value="">— 请选择一篇笔记 —</option>
+            ${noteOptions}
+          </select>
+          <span class="modal-hint">灵感原文会带上时间戳追加到这篇笔记结尾，适合把零散想法归到同一个主题下。</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>正文预览</label>
+        <div class="detail-note">${esc(item.text)}</div>
+      </div>`,
   }));
+
+  let mode = 'new';
+  $('#tMode', modal).addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (!b) return;
+    mode = b.dataset.mode;
+    $$('.seg-btn', $('#tMode', modal)).forEach((x) => x.classList.toggle('is-active', x === b));
+    $('#tPaneNew', modal).classList.toggle('hidden', mode !== 'new');
+    $('#tPaneAppend', modal).classList.toggle('hidden', mode !== 'append');
+    modal.querySelector('[data-modal="ok"]').textContent = mode === 'new' ? '创建笔记' : '追加过去';
+  });
+
+  // 标题留空时给出建议值，点一下就能填上
+  const titleEl = $('#tTitle', modal);
+  titleEl.addEventListener('focus', () => {
+    if (!titleEl.dataset.touched && !titleEl.value) {
+      titleEl.placeholder = `例如：${suggested}`;
+    }
+  });
+  titleEl.addEventListener('input', () => { titleEl.dataset.touched = '1'; });
 
   modal.addEventListener('click', async (e) => {
     const act = e.target.closest('[data-modal]');
     if (!act) return;
     if (act.dataset.modal === 'cancel') { closeModal(); return; }
     try {
-      const res = await api('POST', `/api/inspirations/${item.id}/to-note`, {
-        title: modal.querySelector('#tTitle').value.trim(),
-        notebookId: modal.querySelector('#tNb').value || null,
-      });
-      closeModal();
-      await refresh();
-      S.nbFilter = res.note.notebookId || 'none';
-      switchView('notes');
-      await openNote(res.note.id);
-      toast('已生成笔记，可以继续补充了', 'ok');
+      if (mode === 'new') {
+        const title = titleEl.value.trim();
+        if (!title) { toast('请先给笔记起一个标题', 'err'); titleEl.focus(); return; }
+        const res = await api('POST', `/api/inspirations/${item.id}/to-note`, {
+          title,
+          notebookId: $('#tNb', modal).value || null,
+        });
+        closeModal();
+        await refresh();
+        S.nbFilter = res.note.notebookId || 'none';
+        switchView('notes');
+        await openNote(res.note.id);
+        toast('已生成笔记，可以继续补充了', 'ok');
+      } else {
+        const noteId = $('#tNote', modal).value;
+        if (!noteId) { toast('请选择要追加到的笔记', 'err'); return; }
+        const res = await api('POST', `/api/inspirations/${item.id}/append-to-note`, { noteId });
+        closeModal();
+        await refresh();
+        S.nbFilter = res.note.notebookId || 'none';
+        switchView('notes');
+        await openNote(res.note.id);
+        toast('已追加到笔记末尾', 'ok');
+      }
     } catch (err) { fail(err); }
   });
+
+  titleEl.focus();
 }
 
 /* ---------------------------------------------------------------- */
@@ -833,6 +1026,487 @@ async function createNote() {
 /* Markdown 渲染见 public/markdown.js（挂载为全局 mdToHtml，可单测） */
 
 /* ---------------------------------------------------------------- */
+/* 身体管理                                                          */
+/* ---------------------------------------------------------------- */
+
+/** 常见食物热量参考值（千卡）。数值为常见份量的近似值，仅供参考。 */
+const FOOD_PRESETS = [
+  { name: '米饭 1 碗', kcal: 200 },
+  { name: '馒头 1 个', kcal: 220 },
+  { name: '面条 1 碗', kcal: 280 },
+  { name: '包子 1 个', kcal: 200 },
+  { name: '鸡蛋 1 个', kcal: 70 },
+  { name: '牛奶 250ml', kcal: 135 },
+  { name: '豆浆 1 杯', kcal: 80 },
+  { name: '酸奶 1 杯', kcal: 100 },
+  { name: '鸡胸肉 100g', kcal: 133 },
+  { name: '炒青菜 1 份', kcal: 120 },
+  { name: '苹果 1 个', kcal: 90 },
+  { name: '香蕉 1 根', kcal: 90 },
+  { name: '全麦面包 1 片', kcal: 80 },
+  { name: '奶茶 1 杯', kcal: 350 },
+  { name: '薯条 中份', kcal: 320 },
+  { name: '可乐 330ml', kcal: 140 },
+];
+
+/** 常见运动的 MET 值（代谢当量）。消耗 = MET × 体重kg × 小时数。 */
+const EXERCISE_PRESETS = [
+  { name: '快走', met: 3.5 },
+  { name: '慢跑', met: 7.0 },
+  { name: '跑步 8km/h', met: 8.3 },
+  { name: '骑车', met: 6.8 },
+  { name: '游泳', met: 6.0 },
+  { name: '跳绳', met: 12.3 },
+  { name: '力量训练', met: 5.0 },
+  { name: 'HIIT', met: 8.0 },
+  { name: '瑜伽', met: 2.5 },
+  { name: '拉伸', met: 2.3 },
+  { name: '羽毛球', met: 5.5 },
+  { name: '篮球', met: 6.5 },
+  { name: '爬楼梯', met: 8.8 },
+  { name: '乒乓球', met: 4.0 },
+];
+
+const PRESET_MINUTES = 30;
+
+function foodKcal(p) { return p.kcal; }
+function exerciseKcal(met, weightKg, minutes = PRESET_MINUTES) {
+  if (!weightKg) return 0;
+  return Math.round(met * weightKg * (minutes / 60));
+}
+
+/* ---------------- 档案 ---------------- */
+
+function setupGenderSet(g) {
+  S.setupGender = g;
+  $$('#setupGender .seg-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.gender === g));
+}
+
+function fillActivityOptions(selected) {
+  const sel = $('#setupActivity');
+  const levels = (S.health && S.health.activityLevels) || [];
+  sel.innerHTML = levels.map((l) => `<option value="${l.id}" ${l.id === selected ? 'selected' : ''}>${esc(l.label)}　×${l.factor}</option>`).join('');
+}
+
+function openSetup(editing) {
+  S.setupEditing = editing;
+  const p = (S.health && S.health.profile) || null;
+  $('#setupTitle').textContent = editing ? '编辑基本档案' : '先花 30 秒，填一下你的基本情况';
+  $('#setupHint').textContent = editing
+    ? '改了身高、体重、年龄、性别都会立刻影响基础代谢和每日总消耗的计算结果。'
+    : '身高、体重用来算基础代谢和 BMI；性别和年龄是基础代谢公式必需的参数。这些数据只存在你自己电脑上。';
+  $('#bodySetup').classList.remove('hidden');
+  $('#bodyMain').classList.add('hidden');
+  $('#btnSetupCancel').classList.toggle('hidden', !editing);
+
+  setupGenderSet(p ? p.gender : 'male');
+  $('#setupAge').value = p ? p.age : '';
+  $('#setupHeight').value = p ? p.heightCm : '';
+  $('#setupWeight').value = '';
+  $('#setupTarget').value = p && p.targetWeightKg != null ? p.targetWeightKg : '';
+  fillActivityOptions(p ? p.activity : 'sedentary');
+  if (editing && S.health && S.health.computed) {
+    $('#setupWeight').placeholder = `当前 ${S.health.computed.latestWeightKg} 公斤，改了会新增一条记录`;
+  } else {
+    $('#setupWeight').placeholder = '例如 65.5';
+  }
+  setTimeout(() => $('#setupAge').focus(), 30);
+}
+
+async function saveSetup() {
+  const age = Number($('#setupAge').value);
+  const heightCm = Number($('#setupHeight').value);
+  const weightRaw = $('#setupWeight').value.trim();
+  const target = $('#setupTarget').value.trim();
+  if (!Number.isFinite(age) || age < 5 || age > 120) { toast('请填写有效年龄', 'err'); return; }
+  if (!Number.isFinite(heightCm) || heightCm < 80 || heightCm > 250) { toast('请填写有效身高（厘米）', 'err'); return; }
+  if (!S.setupEditing && !weightRaw) { toast('请填写当前体重', 'err'); return; }
+  try {
+    await api('PUT', '/api/health/profile', {
+      gender: S.setupGender,
+      age,
+      heightCm,
+      activity: $('#setupActivity').value,
+      targetWeightKg: target === '' ? null : Number(target),
+      weightKg: weightRaw === '' ? undefined : Number(weightRaw),
+    });
+    await refresh();
+    toast(S.setupEditing ? '档案已更新' : '档案已保存，开始记录吧', 'ok');
+  } catch (err) { fail(err); }
+}
+
+/* ---------------- 概览 ---------------- */
+
+function renderMetrics() {
+  const h = S.health;
+  const c = h.computed;
+  const box = $('#metricGrid');
+  if (!c) {
+    box.innerHTML = '<div class="metric" style="grid-column:1/-1"><span class="m-label">还没有体重记录，先记一次体重就能算出基础代谢。</span></div>';
+    $('#goalBars').innerHTML = '';
+    return;
+  }
+  const t = h.today;
+  const netVsTdee = c.tdee != null ? t.netKcal - c.tdee : null;
+  box.innerHTML = `
+    <div class="metric is-primary">
+      <span class="m-label">基础代谢 BMR</span>
+      <span class="m-value">${c.bmr ?? '—'}<small>千卡/天</small></span>
+      <span class="m-sub">躺着不动也要消耗的</span>
+    </div>
+    <div class="metric">
+      <span class="m-label">每日总消耗 TDEE</span>
+      <span class="m-value">${c.tdee ?? '—'}<small>千卡</small></span>
+      <span class="m-sub">BMR × 活动系数 ${c.activityFactor}</span>
+    </div>
+    <div class="metric">
+      <span class="m-label">BMI</span>
+      <span class="m-value">${c.bmi ?? '—'}<small>${esc(c.bmiLabel)}</small></span>
+      <span class="m-sub">${c.latestWeightKg} kg / 身高 ${h.profile.heightCm} cm</span>
+    </div>
+    <div class="metric">
+      <span class="m-label">今日净摄入</span>
+      <span class="m-value">${t.netKcal}<small>千卡</small></span>
+      <span class="m-sub">摄入 ${t.intakeKcal} − 消耗 ${t.burnKcal}</span>
+    </div>
+    <div class="metric">
+      <span class="m-label">对比每日总消耗</span>
+      <span class="m-value" style="color:${netVsTdee == null ? '' : netVsTdee > 0 ? 'var(--red)' : 'var(--green)'}">
+        ${netVsTdee == null ? '—' : (netVsTdee > 0 ? '+' : '') + netVsTdee}<small>千卡</small>
+      </span>
+      <span class="m-sub">${netVsTdee == null ? '需要档案' : netVsTdee > 0 ? '今天盈余了' : '今天有缺口'}</span>
+    </div>
+    <div class="metric">
+      <span class="m-label">体重变化</span>
+      <span class="m-value" style="color:${c.weightDelta > 0 ? 'var(--red)' : c.weightDelta < 0 ? 'var(--green)' : ''}">
+        ${c.weightDelta > 0 ? '+' : ''}${c.weightDelta}<small>kg</small>
+      </span>
+      <span class="m-sub">${c.targetRemainKg == null ? `起始 ${c.firstWeightKg} kg` : (c.targetRemainKg > 0 ? `距目标还差 ${c.targetRemainKg} kg` : '已达成目标 🎉')}</span>
+    </div>`;
+
+  const tdeeGoal = c.tdee != null ? c.tdee + t.burnKcal : null;
+  const bars = [];
+  if (tdeeGoal) {
+    const pct = Math.min(100, Math.round((t.intakeKcal / tdeeGoal) * 100));
+    bars.push(`
+      <div class="goal-bar">
+        <div class="gb-head"><span>今日摄入</span><span>${t.intakeKcal} / ${tdeeGoal} 千卡（还能吃 ${t.intakeLeftKcal}）</span></div>
+        <div class="gb-track"><div class="gb-fill ${t.intakeKcal > tdeeGoal ? 'is-over' : ''}" style="width:${pct}%"></div></div>
+      </div>`);
+  }
+  const wGoal = h.goals.waterMl || 0;
+  if (wGoal > 0) {
+    const pct = Math.min(100, Math.round((t.waterMl / wGoal) * 100));
+    bars.push(`
+      <div class="goal-bar">
+        <div class="gb-head"><span>今日喝水</span><span>${t.waterMl} / ${wGoal} ml</span></div>
+        <div class="gb-track"><div class="gb-fill ${t.waterMl >= wGoal ? 'is-ok' : ''}" style="width:${pct}%"></div></div>
+      </div>`);
+  }
+  if (h.goals.burnKcal) {
+    const pct = Math.min(100, Math.round((t.burnKcal / h.goals.burnKcal) * 100));
+    bars.push(`
+      <div class="goal-bar">
+        <div class="gb-head"><span>今日运动消耗</span><span>${t.burnKcal} / ${h.goals.burnKcal} 千卡</span></div>
+        <div class="gb-track"><div class="gb-fill ${t.burnKcal >= h.goals.burnKcal ? 'is-ok' : ''}" style="width:${pct}%"></div></div>
+      </div>`);
+  }
+  $('#goalBars').innerHTML = bars.join('');
+}
+
+/* ---------------- 体重曲线 ---------------- */
+
+function renderWeightChart() {
+  const box = $('#weightChart');
+  const list = S.health.weights;
+  if (list.length < 2) {
+    box.innerHTML = `<div class="chart-empty">
+      ${list.length ? '再记一次体重就能看到变化曲线了。' : '还没有体重记录，点右上角「+ 记录体重」。'}
+    </div>`;
+    $('.chart-legend') && ($('.chart-legend').innerHTML = '');
+    return;
+  }
+
+  const W = 620; const H = 190;
+  const padL = 42; const padR = 14; const padT = 16; const padB = 26;
+  const vals = list.map((w) => w.kg);
+  const target = S.health.computed ? S.health.computed.targetWeightKg : null;
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if (target != null) { min = Math.min(min, target); max = Math.max(max, target); }
+  if (max - min < 1) { max += 0.5; min -= 0.5; }
+  const span = max - min;
+  min -= span * 0.12;
+  max += span * 0.12;
+
+  const n = list.length;
+  const xOf = (i) => padL + (n === 1 ? 0 : (i * (W - padL - padR)) / (n - 1));
+  const yOf = (kg) => padT + (1 - (kg - min) / (max - min)) * (H - padT - padB);
+
+  const pts = list.map((w, i) => `${xOf(i).toFixed(1)},${yOf(w.kg).toFixed(1)}`);
+  const area = `${padL},${H - padB} ${pts.join(' ')} ${xOf(n - 1).toFixed(1)},${H - padB}`;
+
+  const gridLines = [0, 0.5, 1].map((f) => {
+    const kg = min + (max - min) * f;
+    const y = yOf(kg);
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eef0f3" stroke-width="1"/>
+            <text x="${padL - 7}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#98a1b0">${kg.toFixed(1)}</text>`;
+  }).join('');
+
+  const targetLine = target == null ? '' : `
+    <line x1="${padL}" y1="${yOf(target).toFixed(1)}" x2="${W - padR}" y2="${yOf(target).toFixed(1)}"
+          stroke="#2ea36b" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="${W - padR}" y="${(yOf(target) - 5).toFixed(1)}" text-anchor="end" font-size="11" fill="#2ea36b">目标 ${target} kg</text>`;
+
+  const dots = list.map((w, i) => `
+    <circle cx="${xOf(i).toFixed(1)}" cy="${yOf(w.kg).toFixed(1)}" r="3.4" fill="#fff" stroke="#3f6ef0" stroke-width="2">
+      <title>${w.date}　${w.kg} kg${w.note ? '　' + w.note : ''}</title>
+    </circle>`).join('');
+
+  const last = list[n - 1];
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="体重变化曲线">
+      ${gridLines}
+      <polygon points="${area}" fill="#3f6ef0" opacity="0.09"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="#3f6ef0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${targetLine}
+      ${dots}
+      <text x="${padL}" y="${H - 7}" font-size="11" fill="#98a1b0">${list[0].date}</text>
+      <text x="${W - padR}" y="${H - 7}" text-anchor="end" font-size="11" fill="#98a1b0">${last.date}</text>
+    </svg>`;
+}
+
+function renderWeightList() {
+  const list = S.health.weights.slice().reverse();
+  const box = $('#weightList');
+  if (!list.length) { box.innerHTML = ''; return; }
+  box.innerHTML = list.map((w, i) => {
+    const prev = list[i + 1];
+    const delta = prev ? Math.round((w.kg - prev.kg) * 10) / 10 : null;
+    return `
+      <div class="weight-row" data-id="${w.id}">
+        <span class="w-date">${w.date.slice(5)}</span>
+        <span class="w-kg">${w.kg} kg</span>
+        ${delta !== null && delta !== 0 ? `<span class="w-delta ${delta > 0 ? 'up' : 'down'}">${delta > 0 ? '↑' : '↓'}${Math.abs(delta)}</span>` : ''}
+        <span class="w-note">${esc(w.note || '')}</span>
+        <button class="mini danger" data-act="del">删除</button>
+      </div>`;
+  }).join('');
+}
+
+/* ---------------- 摄入 / 消耗 / 喝水 ---------------- */
+
+function renderPresetChips() {
+  const cw = S.health.computed ? S.health.computed.latestWeightKg : null;
+  $('#foodPresets').innerHTML = FOOD_PRESETS.map((p, i) => `
+    <button class="chip" data-food="${i}">${esc(p.name)}<span class="chip-kcal">${foodKcal(p)}</span></button>`).join('');
+  $('#burnPresets').innerHTML = EXERCISE_PRESETS.map((p, i) => {
+    const k = exerciseKcal(p.met, cw);
+    return `<button class="chip" data-ex="${i}" title="${esc(p.name)} ${PRESET_MINUTES} 分钟约消耗 ${k} 千卡（按 ${cw || '—'} kg 估算）">${esc(p.name)}<span class="chip-kcal">${k}</span></button>`;
+  }).join('');
+}
+
+function renderLogs() {
+  const t = S.health.today.date;
+  const intake = S.health.intake.filter((r) => r.date === t);
+  const burn = S.health.burn.filter((r) => r.date === t);
+
+  $('#intakeToday').textContent = `（今天 ${S.health.today.intakeKcal} 千卡）`;
+  $('#burnToday').textContent = `（今天 ${S.health.today.burnKcal} 千卡）`;
+  const left = S.health.today.intakeLeftKcal;
+  $('#intakeLeft').textContent = left == null ? '' : (left >= 0 ? `还能吃 ${left}` : `超出 ${-left}`);
+  $('#intakeLeft').style.background = left == null ? '' : left >= 0 ? 'var(--brand-soft)' : 'var(--red-soft)';
+  $('#intakeLeft').style.color = left == null ? '' : left >= 0 ? 'var(--brand)' : 'var(--red)';
+
+  $('#intakeList').innerHTML = intake.length ? intake.map((r) => `
+    <div class="log-row" data-kind="intake" data-id="${r.id}">
+      <span class="l-name">${esc(r.name)}</span>
+      <span class="l-kcal">${r.kcal} 千卡</span>
+      <button class="mini danger" data-act="del">删除</button>
+    </div>`).join('') : '<div class="log-empty">今天还没记录摄入。点上面的食物标签，或手动填写。</div>';
+
+  $('#burnList').innerHTML = burn.length ? burn.map((r) => `
+    <div class="log-row" data-kind="burn" data-id="${r.id}">
+      <span class="l-name">${esc(r.name)}${r.minutes ? ` · ${r.minutes} 分钟` : ''}</span>
+      <span class="l-kcal burn">−${r.kcal} 千卡</span>
+      <button class="mini danger" data-act="del">删除</button>
+    </div>`).join('') : '<div class="log-empty">今天还没记录运动。点上面的运动标签，或手动填写。</div>';
+}
+
+function renderWater() {
+  const goal = S.health.goals.waterMl || 2000;
+  const drank = S.health.today.waterMl;
+  const cupMl = 250;
+  const cupCount = Math.max(1, Math.ceil(goal / cupMl));
+  let remaining = drank;
+  const cups = [];
+  for (let i = 0; i < cupCount; i += 1) {
+    const inCup = Math.max(0, Math.min(cupMl, remaining));
+    remaining -= inCup;
+    const ratio = inCup / cupMl;
+    const h = 25 * ratio;
+    const y = 31 - h;
+    const id = `cupclip${i}`;
+    cups.push(`
+      <div class="cup" title="第 ${i + 1} 杯 · ${inCup}/${cupMl} ml">
+        <svg viewBox="0 0 26 34">
+          <clipPath id="${id}"><path d="M4 6 H22 L20 31 H6 Z"/></clipPath>
+          <path d="M4 6 H22 L20 31 H6 Z" fill="#f4f7fb" stroke="#d8dee9" stroke-width="1.2"/>
+          ${h > 0 ? `<rect class="cup-fill" x="0" y="${y.toFixed(1)}" width="26" height="${h.toFixed(1)}" fill="#5aa9e6" clip-path="url(#${id})"/>` : ''}
+        </svg>
+      </div>`);
+  }
+  $('#waterCups').innerHTML = cups.join('');
+  const leftMl = Math.max(0, goal - drank);
+  $('#waterToday').textContent = `（今天 ${drank} / ${goal} ml）`;
+  const tip = $('#waterTip');
+  if (tip) tip.textContent = leftMl > 0 ? `再喝 ${leftMl} ml 就达标了` : '今天的水喝够了 👍';
+}
+
+function renderBody() {
+  if (!S.health) return;
+  if (!S.health.profile) {
+    if (!S.setupEditing) openSetup(false);
+    return;
+  }
+  if (!S.setupEditing) {
+    $('#bodySetup').classList.add('hidden');
+    $('#bodyMain').classList.remove('hidden');
+  }
+  renderMetrics();
+  renderWeightChart();
+  renderWeightList();
+  renderPresetChips();
+  renderLogs();
+  renderWater();
+}
+
+/* ---------------- 身体管理的操作 ---------------- */
+
+function addWeightModal() {
+  const today = localDateStr();
+  const modal = openModal(modalShell({
+    title: '记录体重',
+    okText: '保存',
+    body: `
+      <div class="row-inline">
+        <div class="field">
+          <label>体重（公斤）</label>
+          <input class="input" id="wKg" type="number" step="0.1" min="20" max="300" placeholder="例如 64.8">
+        </div>
+        <div class="field">
+          <label>日期</label>
+          <input class="input" id="wDate" type="date" value="${today}">
+        </div>
+      </div>
+      <div class="field">
+        <label>备注（可不填）</label>
+        <input class="input" id="wNote" maxlength="200" placeholder="例如：早上空腹">
+      </div>
+      <div class="modal-hint">同一天再记一次会覆盖当天的记录。体重变化曲线会随记录自动更新。</div>`,
+  }));
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const kg = Number($('#wKg', modal).value);
+    if (!Number.isFinite(kg) || kg < 20 || kg > 300) { toast('请填写有效体重', 'err'); return; }
+    try {
+      await api('POST', '/api/health/weights', {
+        kg,
+        date: $('#wDate', modal).value || today,
+        note: $('#wNote', modal).value.trim(),
+      });
+      closeModal();
+      await refresh();
+      toast('体重已记录', 'ok');
+    } catch (err) { fail(err); }
+  });
+  setTimeout(() => $('#wKg', modal).focus(), 40);
+}
+
+async function addIntake(name, kcal) {
+  try {
+    await api('POST', '/api/health/intake', { name, kcal });
+    await refresh();
+    toast(`已记录 ${name} ${kcal} 千卡`, 'ok');
+  } catch (err) { fail(err); }
+}
+
+async function addBurn(name, kcal, minutes) {
+  try {
+    await api('POST', '/api/health/burn', { name, kcal, minutes });
+    await refresh();
+    toast(`已记录 ${name} −${kcal} 千卡`, 'ok');
+  } catch (err) { fail(err); }
+}
+
+async function addWater(ml) {
+  try {
+    await api('POST', '/api/health/water', { ml });
+    await refresh();
+    const t = S.health.today;
+    if (t.waterMl >= (S.health.goals.waterMl || 0)) toast(`喝了 ${ml} ml，今天达标啦 💧`, 'ok');
+    else toast(`喝了 ${ml} ml，还差 ${t.waterLeftMl} ml`, 'ok');
+  } catch (err) { fail(err); }
+}
+
+function waterCustomModal() {
+  const modal = openModal(modalShell({
+    title: '自定义喝水量',
+    okText: '记录',
+    body: `<div class="field"><label>喝了多少毫升</label>
+      <input class="input" id="wMl" type="number" min="1" max="5000" placeholder="例如 350"></div>`,
+  }));
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const ml = Number($('#wMl', modal).value);
+    if (!Number.isFinite(ml) || ml < 1) { toast('请填写有效水量', 'err'); return; }
+    closeModal();
+    await addWater(Math.round(ml));
+  });
+  setTimeout(() => $('#wMl', modal).focus(), 40);
+}
+
+function goalsModal() {
+  const g = S.health.goals;
+  const modal = openModal(modalShell({
+    title: '设定每日目标',
+    okText: '保存',
+    body: `
+      <div class="field"><label>每日喝水目标（毫升）</label>
+        <input class="input" id="gWater" type="number" min="0" max="10000" value="${g.waterMl ?? 2000}"></div>
+      <div class="field"><label>每日运动消耗目标（千卡，可不填）</label>
+        <input class="input" id="gBurn" type="number" min="0" max="20000" value="${g.burnKcal ?? ''}"></div>
+      <div class="modal-hint">摄入目标默认用你的每日总消耗 TDEE，不需要单独填。</div>`,
+  }));
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    try {
+      await api('PATCH', '/api/health/goals', {
+        waterMl: Number($('#gWater', modal).value) || 0,
+        burnKcal: $('#gBurn', modal).value === '' ? null : Number($('#gBurn', modal).value),
+      });
+      closeModal();
+      await refresh();
+      toast('目标已保存', 'ok');
+    } catch (err) { fail(err); }
+  });
+}
+
+async function deleteHealthRecord(kind, id) {
+  try {
+    await api('DELETE', `/api/health/${kind}/${id}`);
+    await refresh();
+    toast('已删除', 'ok');
+  } catch (err) { fail(err); }
+}
+
+/* ---------------------------------------------------------------- */
 /* 事件绑定                                                          */
 /* ---------------------------------------------------------------- */
 
@@ -849,11 +1523,12 @@ function bind() {
       cancelText: '',
       body: `<div class="kbd-help">
         <p><b>专注</b>点「+ 新建任务」，写下要做的事和需要的分钟数，然后点「开始」。</p>
-        <p><b>计时中</b>可以暂停、+5 分钟、结束并记录，或直接放弃。</p>
+        <p><b>计时中</b>可以暂停、+5 分钟、结束并记录，或直接放弃；点「⛶ 全屏」进入大屏倒计时（按 Esc 退出）。</p>
+        <p><b>记录</b>右下角能按今天 / 近 7 天 / 全部查看，点任意一条看详情。<b>只有倒计时走完才算「完成」</b>，中途结束的标为「中断」，不计入任务的完成次数。</p>
         <p><b>灵感</b>想到什么就直接写，<kbd>Ctrl</kbd>+<kbd>Enter</kbd> 快速保存。</p>
-        <p><b>转笔记</b>灵感右下角的「转为笔记」可以一键变成正式笔记。</p>
-        <p><b>笔记</b>左侧先建笔记本（可层层嵌套），再在里面写笔记，自动保存。</p>
-        <p><b>关联</b>新建任务时可以选一篇笔记，计时结束的记录能追加进去。</p>
+        <p><b>转笔记</b>「转为笔记」时可以自己起标题，也可以选择追加到某一篇已有笔记的末尾。</p>
+        <p><b>笔记</b>左侧先建笔记本（可层层嵌套），再在里面写笔记，自动保存，<kbd>Ctrl</kbd>+<kbd>S</kbd> 手动保存。</p>
+        <p><b>身体</b>填一次身高体重性别年龄，就能算出基础代谢和每日总消耗；体重曲线、运动消耗、饮食摄入、喝水都能记。</p>
         <p><b>数据</b>全部保存在程序目录的 <code>data</code> 文件夹里，复制走就是备份。</p>
         <p class="maker-line">✦ 本软件由 WUST 的 qwwz 定制</p>
       </div>`,
@@ -928,6 +1603,111 @@ function bind() {
       await refresh();
       toast('已放弃');
     } catch (err) { fail(err); }
+  });
+
+  /* --- 全屏倒计时 --- */
+  $('#btnFullscreen').addEventListener('click', enterFullscreenTimer);
+  $('#fsExit').addEventListener('click', exitFullscreenTimer);
+  $('#fsPause').addEventListener('click', () => $('#btnPause').click());
+  $('#fsExtend').addEventListener('click', () => $('#btnExtend').click());
+  $('#fsFinish').addEventListener('click', () => {
+    if (S.active) { exitFullscreenTimer(); openRecordModal('stopped'); }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    // 用户按 Esc 退出系统全屏时，同步收起页面内的大屏倒计时
+    if (!document.fullscreenElement && S.fullscreen) {
+      S.fullscreen = false;
+      $('#fullscreenTimer').classList.add('hidden');
+    }
+  });
+
+  /* --- 学习记录 --- */
+  $('#recordRange').addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (!b) return;
+    S.recordRange = b.dataset.range;
+    $$('#recordRange .seg-btn').forEach((x) => x.classList.toggle('is-active', x === b));
+    renderRecords();
+  });
+  $('#sessionList').addEventListener('click', (e) => {
+    const row = e.target.closest('.record-row');
+    if (!row) return;
+    const s = S.sessions.find((x) => x.id === row.dataset.id);
+    if (s) recordDetailModal(s);
+  });
+
+  /* --- 身体管理 --- */
+  $('#setupGender').addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (b) setupGenderSet(b.dataset.gender);
+  });
+  $('#btnSetupSave').addEventListener('click', saveSetup);
+  $('#btnSetupCancel').addEventListener('click', () => {
+    S.setupEditing = false;
+    renderBody();
+  });
+  $('#btnEditProfile').addEventListener('click', () => openSetup(true));
+  $('#btnAddWeight').addEventListener('click', addWeightModal);
+  $('#btnWaterGoal').addEventListener('click', goalsModal);
+  $('#btnWaterCustom').addEventListener('click', waterCustomModal);
+
+  $('.water-actions').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ml]');
+    if (b) addWater(Number(b.dataset.ml));
+  });
+
+  $('#btnWaterUndo').addEventListener('click', async () => {
+    const today = S.health.today.date;
+    const latest = S.health.water.find((r) => r.date === today);
+    if (!latest) { toast('今天还没有喝水记录', 'err'); return; }
+    await deleteHealthRecord('water', latest.id);
+  });
+
+  $('#foodPresets').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-food]');
+    if (!b) return;
+    const p = FOOD_PRESETS[Number(b.dataset.food)];
+    addIntake(p.name, foodKcal(p));
+  });
+
+  $('#burnPresets').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ex]');
+    if (!b) return;
+    const p = EXERCISE_PRESETS[Number(b.dataset.ex)];
+    const w = S.health.computed ? S.health.computed.latestWeightKg : null;
+    if (!w) { toast('先记录一次体重才能估算消耗', 'err'); return; }
+    addBurn(p.name, exerciseKcal(p.met, w), PRESET_MINUTES);
+  });
+
+  $('#btnAddIntake').addEventListener('click', () => {
+    const kcal = Number($('#intakeKcal').value);
+    if (!Number.isFinite(kcal) || kcal <= 0) { toast('请填写千卡数', 'err'); return; }
+    const name = $('#intakeName').value.trim() || '手动填写';
+    $('#intakeKcal').value = '';
+    $('#intakeName').value = '';
+    addIntake(name, Math.round(kcal));
+  });
+
+  $('#btnAddBurn').addEventListener('click', () => {
+    const kcal = Number($('#burnKcal').value);
+    if (!Number.isFinite(kcal) || kcal <= 0) { toast('请填写千卡数', 'err'); return; }
+    const name = $('#burnName').value.trim() || '手动填写';
+    $('#burnKcal').value = '';
+    $('#burnName').value = '';
+    addBurn(name, Math.round(kcal), null);
+  });
+
+  $('#intakeList').addEventListener('click', (e) => {
+    const row = e.target.closest('.log-row');
+    if (row && e.target.closest('[data-act="del"]')) deleteHealthRecord('intake', row.dataset.id);
+  });
+  $('#burnList').addEventListener('click', (e) => {
+    const row = e.target.closest('.log-row');
+    if (row && e.target.closest('[data-act="del"]')) deleteHealthRecord('burn', row.dataset.id);
+  });
+  $('#weightList').addEventListener('click', (e) => {
+    const row = e.target.closest('.weight-row');
+    if (row && e.target.closest('[data-act="del"]')) deleteHealthRecord('weights', row.dataset.id);
   });
 
   /* --- 灵感 --- */
@@ -1066,7 +1846,7 @@ async function boot() {
   }
   const wanted = (location.hash || '').replace('#', '');
   const view = wanted.split('/')[0];
-  if (['focus', 'inspire', 'notes'].includes(view)) switchView(view);
+  if (['focus', 'inspire', 'notes', 'body'].includes(view)) switchView(view);
   const wantedNote = wanted.startsWith('notes/') ? wanted.slice('notes/'.length) : '';
   if (wantedNote) await openNote(wantedNote);
   setInterval(tickTimer, 250);
@@ -1085,6 +1865,7 @@ async function boot() {
         S.finishHandled = false;
         renderTimer();
         renderTasks();
+        renderRecords();
         $('#todayStat').textContent = `今日 ${Math.round(todaySeconds() / 60)} 分钟`;
       }
     } catch { /* 网络抖动忽略 */ }

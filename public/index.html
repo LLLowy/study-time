@@ -16,6 +16,7 @@
     <button class="tab is-active" data-view="focus">专注</button>
     <button class="tab" data-view="inspire">灵感</button>
     <button class="tab" data-view="notes">笔记</button>
+    <button class="tab" data-view="body">身体</button>
   </nav>
   <div class="topbar-right">
     <span class="maker" id="makerTag" title="本软件由 WUST 的 qwwz 定制">由 WUST 的 qwwz 定制</span>
@@ -37,44 +38,73 @@
         </div>
         <ul class="task-list" id="taskList"></ul>
         <div class="empty-hint" id="taskEmpty">还没有任务。点「+ 新建任务」，写下要做的事和需要的时间。</div>
-
-        <div class="panel-foot">
-          <h3>学习记录 <span class="muted" id="sessionCount"></span></h3>
-          <div class="session-list" id="sessionList"></div>
-        </div>
       </aside>
 
-      <section class="panel timer-panel">
-        <div class="timer-idle" id="timerIdle">
-          <div class="idle-emoji">⏳</div>
-          <p class="idle-title">还没有开始计时</p>
-          <p class="idle-sub">在左边选一个任务，点「开始」进入专注。</p>
-        </div>
+      <div class="focus-right">
 
-        <div class="timer-active hidden" id="timerActive">
-          <div class="timer-task-name" id="timerTaskTitle"></div>
-          <div class="ring-wrap">
-            <svg class="ring" viewBox="0 0 220 220">
-              <circle class="ring-bg" cx="110" cy="110" r="98"></circle>
-              <circle class="ring-fg" id="ringFg" cx="110" cy="110" r="98"></circle>
-            </svg>
-            <div class="ring-center">
-              <div class="time-text" id="timeText">25:00</div>
-              <div class="time-hint" id="timeHint">剩余时间</div>
+        <section class="panel timer-panel">
+          <div class="timer-idle" id="timerIdle">
+            <span class="idle-emoji">⏳</span>
+            <span class="idle-sub">在左边选一个任务，点「开始」进入专注</span>
+          </div>
+
+          <div class="timer-active hidden" id="timerActive">
+            <div class="ring-wrap">
+              <svg class="ring" viewBox="0 0 220 220">
+                <circle class="ring-bg" cx="110" cy="110" r="98"></circle>
+                <circle class="ring-fg" id="ringFg" cx="110" cy="110" r="98"></circle>
+              </svg>
+              <div class="ring-center">
+                <div class="time-text" id="timeText">25:00</div>
+                <div class="time-hint" id="timeHint">剩余时间</div>
+              </div>
+            </div>
+            <div class="timer-side">
+              <div class="timer-task-name" id="timerTaskTitle"></div>
+              <p class="timer-foot" id="timerFoot"></p>
+              <div class="timer-actions">
+                <button class="btn sm" id="btnPause">暂停</button>
+                <button class="btn sm" id="btnExtend">+5 分钟</button>
+                <button class="btn sm primary" id="btnFinish">结束并记录</button>
+                <button class="btn sm danger-ghost" id="btnAbandon">放弃</button>
+                <button class="btn sm" id="btnFullscreen" title="全屏显示倒计时">⛶ 全屏</button>
+              </div>
             </div>
           </div>
-          <div class="timer-actions">
-            <button class="btn" id="btnPause">暂停</button>
-            <button class="btn" id="btnExtend">+5 分钟</button>
-            <button class="btn primary" id="btnFinish">结束并记录</button>
-            <button class="btn danger-ghost" id="btnAbandon">放弃</button>
-          </div>
-          <p class="timer-foot" id="timerFoot"></p>
-        </div>
-      </section>
+        </section>
 
+        <section class="panel records-panel">
+          <div class="panel-head">
+            <h2>学习记录 <span class="muted" id="sessionCount"></span></h2>
+            <div class="seg" id="recordRange">
+              <button class="seg-btn is-active" data-range="today">今天</button>
+              <button class="seg-btn" data-range="week">近 7 天</button>
+              <button class="seg-btn" data-range="all">全部</button>
+            </div>
+          </div>
+          <div class="records-stats" id="recordStats"></div>
+          <div class="records-list" id="sessionList"></div>
+        </section>
+
+      </div>
     </div>
   </section>
+
+  <!-- 全屏倒计时 -->
+  <div class="fullscreen-timer hidden" id="fullscreenTimer">
+    <div class="fs-inner">
+      <div class="fs-task" id="fsTask"></div>
+      <div class="fs-time" id="fsTime">25:00</div>
+      <div class="fs-bar"><div class="fs-bar-fill" id="fsBar"></div></div>
+      <div class="fs-hint" id="fsHint"></div>
+      <div class="fs-actions">
+        <button class="btn" id="fsPause">暂停</button>
+        <button class="btn" id="fsExtend">+5 分钟</button>
+        <button class="btn primary" id="fsFinish">结束并记录</button>
+        <button class="btn" id="fsExit">退出全屏</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ======================= 灵感 ======================= -->
   <section class="view" id="view-inspire">
@@ -94,6 +124,138 @@
 
       <div class="inspire-list" id="inspireList"></div>
       <div class="empty-hint" id="inspireEmpty">还没有灵感记录。想到什么就往上写，一句话也行。</div>
+    </div>
+  </section>
+
+  <!-- ======================= 身体 ======================= -->
+  <section class="view" id="view-body">
+
+    <!-- 首次引导 / 编辑档案 -->
+    <div class="setup-wrap" id="bodySetup">
+      <div class="panel setup-panel">
+        <div class="setup-head">
+          <h2 id="setupTitle">先花 30 秒，填一下你的基本情况</h2>
+          <p class="modal-hint" id="setupHint">
+            身高、体重用来算基础代谢和 BMI；性别和年龄是基础代谢公式必需的参数。这些数据只存在你自己电脑上。
+          </p>
+        </div>
+        <div class="setup-form">
+          <div class="field">
+            <label>性别</label>
+            <div class="seg" id="setupGender">
+              <button class="seg-btn is-active" data-gender="male">男</button>
+              <button class="seg-btn" data-gender="female">女</button>
+            </div>
+          </div>
+          <div class="row-inline">
+            <div class="field">
+              <label>年龄</label>
+              <input class="input" id="setupAge" type="number" min="5" max="120" placeholder="例如 20">
+            </div>
+            <div class="field">
+              <label>身高（厘米）</label>
+              <input class="input" id="setupHeight" type="number" min="80" max="250" placeholder="例如 175">
+            </div>
+          </div>
+          <div class="row-inline">
+            <div class="field">
+              <label>体重（公斤）</label>
+              <input class="input" id="setupWeight" type="number" step="0.1" min="20" max="300" placeholder="例如 65.5">
+            </div>
+            <div class="field">
+              <label>目标体重（公斤，可不填）</label>
+              <input class="input" id="setupTarget" type="number" step="0.1" min="20" max="300" placeholder="例如 60">
+            </div>
+          </div>
+          <div class="field">
+            <label>日常活动强度（影响每日总消耗）</label>
+            <select class="select" id="setupActivity"></select>
+          </div>
+        </div>
+        <div class="setup-foot">
+          <button class="btn" id="btnSetupCancel">取消</button>
+          <button class="btn primary" id="btnSetupSave">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 身体管理主界面 -->
+    <div class="body-grid hidden" id="bodyMain">
+
+      <div class="body-col">
+        <section class="panel overview-panel">
+          <div class="panel-head">
+            <h2>今日概览</h2>
+            <button class="btn sm" id="btnEditProfile">编辑档案</button>
+          </div>
+          <div class="metric-grid" id="metricGrid"></div>
+          <div class="goal-bars" id="goalBars"></div>
+        </section>
+
+        <section class="panel weight-panel">
+          <div class="panel-head">
+            <h2>体重变化</h2>
+            <button class="btn primary sm" id="btnAddWeight">+ 记录体重</button>
+          </div>
+          <div class="chart-box" id="weightChart"></div>
+          <div class="weight-list" id="weightList"></div>
+        </section>
+      </div>
+
+      <div class="body-col">
+        <section class="panel log-panel">
+          <div class="panel-head">
+            <h2>摄入 <span class="muted" id="intakeToday"></span></h2>
+            <span class="pill" id="intakeLeft"></span>
+          </div>
+          <div class="preset-section">
+            <div class="preset-label">常见食物（参考值，点一下即记录）</div>
+            <div class="chip-row" id="foodPresets"></div>
+          </div>
+          <div class="manual-row">
+            <input class="input sm" id="intakeName" placeholder="名称（可不填）">
+            <input class="input sm" id="intakeKcal" type="number" min="0" placeholder="千卡">
+            <button class="btn primary sm" id="btnAddIntake">手动添加</button>
+          </div>
+          <div class="log-list" id="intakeList"></div>
+        </section>
+      </div>
+
+      <div class="body-col">
+        <section class="panel log-panel">
+          <div class="panel-head">
+            <h2>消耗 <span class="muted" id="burnToday"></span></h2>
+          </div>
+          <div class="preset-section">
+            <div class="preset-label">常见运动（按你当前体重、30 分钟估算，点一下即记录）</div>
+            <div class="chip-row" id="burnPresets"></div>
+          </div>
+          <div class="manual-row">
+            <input class="input sm" id="burnName" placeholder="名称（可不填）">
+            <input class="input sm" id="burnKcal" type="number" min="0" placeholder="千卡">
+            <button class="btn primary sm" id="btnAddBurn">手动添加</button>
+          </div>
+          <div class="log-list" id="burnList"></div>
+        </section>
+
+        <section class="panel water-panel">
+          <div class="panel-head">
+            <h2>喝水 <span class="muted" id="waterToday"></span></h2>
+            <button class="btn sm" id="btnWaterGoal">设定目标</button>
+          </div>
+          <div class="water-cups" id="waterCups"></div>
+          <div class="water-tip" id="waterTip"></div>
+          <div class="water-actions">
+            <button class="btn sm" data-ml="150">+150 ml</button>
+            <button class="btn sm" data-ml="200">+200 ml</button>
+            <button class="btn sm" data-ml="300">+300 ml</button>
+            <button class="btn sm" data-ml="500">+500 ml</button>
+            <button class="btn sm" id="btnWaterCustom">自定义</button>
+            <button class="btn sm danger-ghost" id="btnWaterUndo">撤销上一条</button>
+          </div>
+        </section>
+      </div>
+
     </div>
   </section>
 
