@@ -1,20 +1,19 @@
 /**
- * 手动备份 / 查看备份：node tools/backup-data.mjs [list|now]
+ * 手动备份 / 查看备份：node tools/backup-data.mjs [list|now|where]
  *
- * 备份存在项目下的 backups\<时间>\ 目录里，和 data 分开存，
- * 所以就算 data 被误删，也从备份里拿回来。
+ * 备份存在数据目录下的 _快照\<时间>\ 里，和数据放在一起，
+ * 所以整个数据目录拷走就是完整备份。
  */
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { resolveDataDir, fileHasContent } from './paths.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DATA = path.join(ROOT, 'data');
-const SNAP = path.join(ROOT, 'backups');
+const DATA = resolveDataDir();
+const SNAP = path.join(DATA, '_快照');
 const FILES = ['tasks.json', 'inspirations.json', 'notes.json', 'health.json'];
 const KEEP = 40;
 
-const cmd = process.argv[2] || 'now';
+const cmd = process.argv.slice(2).find((a) => !a.startsWith('-')) || 'now';
 
 function readJson(file) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; }
@@ -37,17 +36,13 @@ function summarize(dir) {
   return parts.join('　');
 }
 
-function hasContent() {
-  const t = readJson(path.join(DATA, 'tasks.json')) || {};
-  const n = readJson(path.join(DATA, 'notes.json')) || {};
-  const i = readJson(path.join(DATA, 'inspirations.json')) || {};
-  const h = readJson(path.join(DATA, 'health.json')) || {};
-  return (t.tasks || []).length + (t.sessions || []).length + (n.notebooks || []).length
-    + (n.notes || []).length + (i.items || []).length + (h.weights || []).length
-    + (h.intake || []).length + (h.burn || []).length + (h.water || []).length > 0;
+if (cmd === 'where') {
+  console.log(DATA);
+  process.exit(0);
 }
 
 if (cmd === 'list') {
+  console.log('数据目录：' + DATA + '\n');
   if (!existsSync(SNAP)) {
     console.log('还没有任何备份。运行 node tools/backup-data.mjs now 可以立刻备份一份。');
     process.exit(0);
@@ -62,20 +57,19 @@ if (cmd === 'list') {
     process.exit(0);
   }
   console.log(`共 ${dirs.length} 份备份（最新的在前面）：\n`);
-  for (const d of dirs) {
-    console.log(`  ${d}   ${summarize(path.join(SNAP, d))}`);
-  }
-  console.log('\n要恢复某一份，把对应目录里的 json 文件复制回 data\\ 即可。');
+  for (const d of dirs) console.log(`  ${d}   ${summarize(path.join(SNAP, d))}`);
+  console.log('\n要恢复某一份，把对应目录里的 json 文件复制回数据目录即可。');
   process.exit(0);
 }
 
 // 默认：立刻备份
 if (!existsSync(DATA)) {
-  console.error('找不到 data 目录，没有可备份的数据。');
+  console.error('找不到数据目录：' + DATA);
   process.exit(1);
 }
-if (!hasContent()) {
-  console.log('data 目录里没有任何内容，跳过备份。');
+if (!FILES.some((f) => fileHasContent(path.join(DATA, f)))) {
+  console.log('数据目录里还没有任何内容，跳过备份。');
+  console.log('数据目录：' + DATA);
   process.exit(0);
 }
 
@@ -94,8 +88,9 @@ for (const f of FILES) {
     copied += 1;
   }
 }
-console.log(`已备份 ${copied} 个文件到 backups\\${stamp}\\`);
+console.log(`已备份 ${copied} 个文件到 _快照\\${stamp}\\`);
 console.log(`  ${summarize(dir)}`);
+console.log(`  数据目录：${DATA}`);
 
 const dirs = readdirSync(SNAP, { withFileTypes: true })
   .filter((e) => e.isDirectory())
@@ -104,4 +99,3 @@ const dirs = readdirSync(SNAP, { withFileTypes: true })
 for (const old of dirs.slice(0, Math.max(0, dirs.length - KEEP))) {
   rmSync(path.join(SNAP, old), { recursive: true, force: true });
 }
-void statSync;

@@ -3,22 +3,110 @@
 /**
  * 学习工作站 —— 本地服务器
  * 零第三方依赖，只使用 Node.js 内置模块。
- * 数据以 JSON 文件形式保存在 ./data 目录下，可随时备份或拷贝到别的电脑。
+ *
+ * 数据默认存在「文档\学习工作站数据」里（在代码目录外面），
+ * 所以替换、重装、甚至删掉整个程序目录，数据都不会受影响。
+ * 位置可以改：运行「更改数据位置.vbs」，或启动时加 --data=<目录>。
  */
 
 const http = require('node:http');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
-const BACKUP_DIR = path.join(DATA_DIR, '_backup');
+const APP_NAME = '学习工作站';
 const MAX_BACKUPS = 30;
 const MAX_BODY = 4 * 1024 * 1024; // 4MB
+
+/** 前端用它判断「浏览器里的页面」和「正在跑的服务」是不是同一版本。 */
+const API_VERSION = 3;
+
+/* ------------------------------------------------------------------ */
+/* 数据放在哪                                                          */
+/* ------------------------------------------------------------------ */
+
+/** 「数据在哪」的设置文件，放在 %APPDATA% 里，同样在代码目录外面。 */
+function configDir() {
+  const arg = process.argv.slice(2).find((a) => a.startsWith('--config-dir='));
+  if (arg) {
+    const raw = arg.slice('--config-dir='.length).replace(/^"(.*)"$/, '$1').trim();
+    if (raw) return path.resolve(raw);
+  }
+  const base = process.env.APPDATA || process.env.LOCALAPPDATA;
+  return base ? path.join(base, APP_NAME) : null;
+}
+const CONFIG_DIR = configDir();
+const CONFIG_FILE = CONFIG_DIR ? path.join(CONFIG_DIR, 'config.json') : null;
+
+function loadConfig() {
+  if (!CONFIG_FILE) return {};
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '');
+    const cfg = JSON.parse(raw);
+    return cfg && typeof cfg === 'object' ? cfg : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(cfg) {
+  if (!CONFIG_FILE) throw new Error('找不到 %APPDATA%，无法保存设置');
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+  return CONFIG_FILE;
+}
+
+/** 找「文档」目录（OneDrive 重定向过的机器上 Documents 可能在 OneDrive 里）。 */
+function documentsDir() {
+  const home = process.env.USERPROFILE || os.homedir();
+  const candidates = [
+    path.join(home, 'Documents'),
+    path.join(home, 'OneDrive', 'Documents'),
+    path.join(home, 'OneDrive', '文档'),
+    path.join(home, '文档'),
+    home,
+  ];
+  for (const c of candidates) {
+    try { if (fs.statSync(c).isDirectory()) return c; } catch { /* 试下一个 */ }
+  }
+  return home;
+}
+
+function defaultDataDir() {
+  return path.join(documentsDir(), `${APP_NAME}数据`);
+}
+
+/** 数据目录优先级：--data 参数 > 配置文件 > 文档里的默认位置。 */
+function resolveDataDir() {
+  const arg = process.argv.slice(2).find((a) => a.startsWith('--data='));
+  if (arg) {
+    const raw = arg.slice('--data='.length).replace(/^"(.*)"$/, '$1').trim();
+    if (raw) return path.resolve(raw);
+  }
+  const cfg = loadConfig();
+  if (typeof cfg.dataDir === 'string' && cfg.dataDir.trim()) {
+    return path.resolve(cfg.dataDir.trim());
+  }
+  return defaultDataDir();
+}
+
+const DATA_DIR = resolveDataDir();
+/** 老版本把数据放在程序目录里的 data/，首次启动时会自动复制到新位置。 */
+const LEGACY_DATA_DIR = path.join(ROOT, 'data');
+const LEGACY_SNAPSHOT_DIR = path.join(ROOT, 'backups');
+
+const BACKUP_DIR = path.join(DATA_DIR, '_backup');
+const SNAPSHOT_ROOT = path.join(DATA_DIR, '_快照');
+
+/** 运行时的端口 / 停止令牌放程序目录里 —— 它们不是用户数据，不跟着数据搬。 */
+const RUNTIME_DIR = path.join(ROOT, '.runtime');
+const PORT_FILE = path.join(RUNTIME_DIR, 'server-port');
+const STOP_TOKEN_FILE = path.join(RUNTIME_DIR, 'stop-token');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -35,14 +123,13 @@ const MIME = {
 };
 
 /**
- * 停止令牌：写在 data/.stop-token 里，「停止.vbs」读它来调用 /api/shutdown。
+ * 停止令牌：「停止.vbs」读它来调用 /api/shutdown。
  * 这样别的程序（或浏览器里打开的任意网页）没法随便把你的程序关掉。
  */
 const STOP_TOKEN = crypto.randomBytes(24).toString('hex');
-const STOP_TOKEN_FILE = path.join(DATA_DIR, '.stop-token');
-const PORT_FILE = path.join(DATA_DIR, '.server-port');
 
 async function writeStopToken() {
+  await fsp.mkdir(RUNTIME_DIR, { recursive: true });
   await fsp.writeFile(STOP_TOKEN_FILE, STOP_TOKEN, 'utf8');
 }
 
@@ -50,8 +137,9 @@ async function removeStopToken() {
   try { await fsp.rm(STOP_TOKEN_FILE, { force: true }); } catch { /* ignore */ }
 }
 
-/** 实际监听的端口号写在 data/.server-port 里，启动/停止脚本读它，就不用挨个端口试探。 */
+/** 实际监听的端口号写在 .runtime\server-port 里，启动/停止脚本读它，就不用挨个端口试探。 */
 async function writePortFile(port) {
+  await fsp.mkdir(RUNTIME_DIR, { recursive: true });
   await fsp.writeFile(PORT_FILE, String(port), 'utf8');
 }
 
@@ -60,24 +148,52 @@ async function removePortFile() {
 }
 
 /* ------------------------------------------------------------------ */
-/* 快照备份：存在 data 目录【外面】，所以就算整个 data 被删掉也还在        */
+/* 快照备份：和数据放在同一个目录下，整包拷走就是完整备份                  */
 /* ------------------------------------------------------------------ */
 
-const SNAPSHOT_ROOT = path.join(ROOT, 'backups');
 const SNAPSHOT_MARKER = path.join(SNAPSHOT_ROOT, '.last-fingerprint');
 const MAX_SNAPSHOTS = 40;
 
+/** 一份解析好的数据里有没有值得备份的内容。 */
+function stateHasContent(s) {
+  if (!s) return false;
+  const t = s.tasks || {};
+  const i = s.inspirations || {};
+  const n = s.notes || {};
+  const h = s.health || {};
+  return (t.tasks || []).length > 0 || (t.sessions || []).length > 0 || Boolean(t.active)
+    || (i.items || []).length > 0
+    || (n.notebooks || []).length > 0 || (n.notes || []).length > 0
+    || Boolean(h.profile) || (h.weights || []).length > 0 || (h.intake || []).length > 0
+    || (h.burn || []).length > 0 || (h.water || []).length > 0
+    || (h.customFoods || []).length > 0 || (h.customBurns || []).length > 0;
+}
+
 /** 有没有值得备份的内容（全新空库就不必存了）。 */
 function hasContent() {
-  const t = state.tasks;
-  const i = state.inspirations;
-  const n = state.notes;
-  const h = state.health;
-  return t.tasks.length > 0 || t.sessions.length > 0 || Boolean(t.active)
-    || i.items.length > 0
-    || n.notebooks.length > 0 || n.notes.length > 0
-    || Boolean(h.profile) || h.weights.length > 0 || h.intake.length > 0
-    || h.burn.length > 0 || h.water.length > 0;
+  return stateHasContent(state);
+}
+
+/** 读一个 json 文件并判断里面有没有内容。 */
+function fileHasContent(file) {
+  try {
+    return stateHasContent(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 这个文件看起来「被用过」吗？
+ * 只看文件大小、不看能不能解析 —— 免得旧数据恰好坏掉时被静默跳过，
+ * 那样用户会以为数据丢了。坏文件也照搬，搬过去后程序会保留现场。
+ */
+function fileLooksUsed(file) {
+  try {
+    return fs.statSync(file).size > 20;
+  } catch {
+    return false;
+  }
 }
 
 let lastSnapshotDir = null;
@@ -180,14 +296,59 @@ async function ensureDirs() {
   await fsp.mkdir(BACKUP_DIR, { recursive: true });
 }
 
+/**
+ * 首次用新位置时，把程序目录里旧 data\ 的内容【复制】过去（原件一律保留）。
+ * 只有在两边都为空 / 新位置已有内容时才不动。
+ */
+async function migrateLegacyData() {
+  const files = Object.values(FILE_OF);
+  const newHas = files.some((f) => fileLooksUsed(path.join(DATA_DIR, f)));
+  if (newHas) return null;
+
+  const legacyHas = files.some((f) => fileLooksUsed(path.join(LEGACY_DATA_DIR, f)));
+  await fsp.mkdir(DATA_DIR, { recursive: true });
+  if (!legacyHas) return null;
+
+  let copied = 0;
+  for (const f of files) {
+    const src = path.join(LEGACY_DATA_DIR, f);
+    if (fs.existsSync(src)) {
+      await fsp.copyFile(src, path.join(DATA_DIR, f));
+      copied += 1;
+    }
+  }
+
+  // 旧位置的整份快照也一起搬过来，历史不丢
+  let snapshots = 0;
+  try {
+    if (fs.existsSync(LEGACY_SNAPSHOT_DIR)) {
+      await fsp.mkdir(SNAPSHOT_ROOT, { recursive: true });
+      for (const e of await fsp.readdir(LEGACY_SNAPSHOT_DIR, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const from = path.join(LEGACY_SNAPSHOT_DIR, e.name);
+        const to = path.join(SNAPSHOT_ROOT, e.name);
+        if (!fs.existsSync(to)) {
+          await fsp.cp(from, to, { recursive: true });
+          snapshots += 1;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[迁移] 旧快照复制失败（不影响数据）：', err.message);
+  }
+
+  return { copied, snapshots, from: LEGACY_DATA_DIR, to: DATA_DIR };
+}
+
 async function loadState() {
   await ensureDirs();
+  const migration = await migrateLegacyData();
   const defaults = DEFAULT_STATE();
   for (const key of Object.keys(FILE_OF)) {
     const file = path.join(DATA_DIR, FILE_OF[key]);
     try {
       const raw = await fsp.readFile(file, 'utf8');
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
       state[key] = Object.assign({}, defaults[key], parsed);
     } catch (err) {
       if (err.code !== 'ENOENT') {
@@ -201,6 +362,7 @@ async function loadState() {
       await persist(key);
     }
   }
+  return migration;
 }
 
 async function backup(key) {
@@ -567,10 +729,104 @@ function publicHealth() {
 const routes = [];
 const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
 
+/* --- 数据存放位置 --- */
+
+function snapshotCount() {
+  try {
+    return fs.readdirSync(SNAPSHOT_ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
+  } catch {
+    return 0;
+  }
+}
+
+function storageInfo() {
+  const cfg = loadConfig();
+  const fromConfig = typeof cfg.dataDir === 'string' && cfg.dataDir.trim() ? cfg.dataDir.trim() : null;
+  const fromArg = process.argv.slice(2).find((a) => a.startsWith('--data='));
+  return {
+    dataDir: DATA_DIR,
+    defaultDataDir: defaultDataDir(),
+    configFile: CONFIG_FILE,
+    isCustom: Boolean(fromConfig || fromArg),
+    configuredDir: fromConfig,
+    fromCommandLine: Boolean(fromArg),
+    isProjectLocal: path.resolve(DATA_DIR) === path.resolve(LEGACY_DATA_DIR),
+    snapshotCount: snapshotCount(),
+    legacyDataDir: LEGACY_DATA_DIR,
+    legacyHasData: Object.values(FILE_OF).some((f) => fileLooksUsed(path.join(LEGACY_DATA_DIR, f))),
+  };
+}
+
+/** 立刻存一份整份快照。 */
+route('POST', '/api/storage/backup', async () => {
+  const dir = await snapshotData({ force: true, quiet: false });
+  if (!dir) throw new HttpError(500, '备份失败，请看程序窗口里的提示');
+  return { dir, name: path.basename(dir), storage: storageInfo() };
+});
+
+/** 在资源管理器里打开数据文件夹 —— 路径来自配置，不接受用户输入。 */
+route('POST', '/api/storage/open', async () => {
+  const dir = DATA_DIR;
+  try {
+    if (process.platform === 'win32') {
+      spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [dir], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [dir], { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch {
+    throw new HttpError(500, '打不开资源管理器，请手动打开：' + dir);
+  }
+  return { dir };
+});
+
+/**
+ * 换数据位置。只写配置，重启后才生效 ——
+ * 下次启动时会把当前数据复制过去，原位置保留。
+ */
+route('POST', '/api/storage/dir', async (_p, body) => {
+  const raw = String(body.dir || '').trim();
+  if (!raw) throw new HttpError(400, '请填写目录路径');
+  const target = path.resolve(raw);
+  if (target === path.resolve(DATA_DIR)) throw new HttpError(400, '这就是当前的位置');
+
+  // 能建目录、能写文件才算可用
+  try {
+    await fsp.mkdir(target, { recursive: true });
+    const probe = path.join(target, '.write-test');
+    await fsp.writeFile(probe, 'ok', 'utf8');
+    await fsp.rm(probe, { force: true });
+  } catch (err) {
+    throw new HttpError(400, `这个位置不能写入：${err.message}`);
+  }
+
+  const cfg = loadConfig();
+  cfg.dataDir = target;
+  cfg.updatedAt = now();
+  saveConfig(cfg);
+  return {
+    dataDir: target,
+    needRestart: true,
+    message: '已记录新位置。重启程序后生效，数据会自动复制过去，原位置的文件保留。',
+  };
+});
+
+/** 改回「文档」里的默认位置。 */
+route('POST', '/api/storage/reset', async () => {
+  const cfg = loadConfig();
+  delete cfg.dataDir;
+  cfg.updatedAt = now();
+  saveConfig(cfg);
+  return { dataDir: defaultDataDir(), needRestart: true };
+});
+
 /* --- 概览 --- */
 route('GET', '/api/all', async () => ({
+  apiVersion: API_VERSION,
   serverTime: now(),
   today: localDate(),
+  storage: storageInfo(),
   tasks: state.tasks.tasks,
   active: publicActive(state.tasks.active),
   sessions: state.tasks.sessions.slice(0, 300),
@@ -1292,7 +1548,7 @@ async function main() {
   const startPort = Number.isInteger(argPort) && argPort > 0 ? argPort : 7788;
   const noOpen = process.argv.includes('--no-open');
 
-  await loadState();
+  const migration = await loadState();
   const port = await listen(startPort);
   await writeStopToken();
   await writePortFile(port);
@@ -1305,7 +1561,16 @@ async function main() {
   console.log('');
   console.log(`   访问地址：${url}`);
   console.log(`   数据目录：${DATA_DIR}`);
-  if (snap) console.log(`   已快照备份：${path.relative(ROOT, snap)}`);
+  if (migration) {
+    console.log('');
+    console.log(`   ℹ 已把原来的数据从 ${migration.from}`);
+    console.log(`     复制到新位置（复制了 ${migration.copied} 个文件${migration.snapshots ? `、${migration.snapshots} 份备份` : ''}）。`);
+    console.log('     原来的文件原地保留，确认没问题后可以自己删掉。');
+  }
+  if (snap) console.log(`   已快照备份：${path.basename(snap)}`);
+  console.log('');
+  console.log('   数据放在代码目录外面，以后替换程序文件不会影响你的记录。');
+  console.log('   想换位置：双击「更改数据位置.vbs」。');
   console.log('');
   console.log('   本软件由 WUST 的 qwwz 定制');
   console.log('');
@@ -1328,7 +1593,7 @@ async function shutdown(code) {
 }
 
 process.on('SIGINT', () => {
-  console.log('\n已停止。数据均已保存到 data 目录。');
+  console.log('\n已停止。数据都已保存到：' + DATA_DIR);
   shutdown(0);
 });
 process.on('SIGTERM', () => shutdown(0));

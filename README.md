@@ -54,6 +54,51 @@
 
 ---
 
+## 数据放在哪（重要）
+
+**你的数据默认存在「文档」里，不在这个程序文件夹里：**
+
+```
+C:\Users\<你的用户名>\Documents\学习工作站数据\
+    tasks.json          任务与学习记录
+    inspirations.json   灵感
+    notes.json          笔记本与笔记
+    health.json         身体管理
+    _backup\            每次保存前的自动备份（保留最近 30 份）
+    _快照\              整份快照（保留最近 40 份）
+```
+
+**这样设计的好处**：替换 `server.js`、`public\` 这些程序文件，甚至把整个程序文件夹删掉重下，
+**你的数据都不会受任何影响**。
+
+- 「数据在哪」这个设置记在 `%APPDATA%\学习工作站\config.json`，同样在程序目录外面
+- 第一次用新版启动时，如果发现程序目录里还有旧的 `data\`，会**自动复制**到新位置（**原件保留**，确认无误后可以自己删）
+- **整个「学习工作站数据」文件夹拷到 U 盘或网盘就是完整备份**，换电脑拷回去即可
+
+### 想换个位置
+
+三种方式，随便挑一种：
+
+| 方式 | 怎么做 |
+| --- | --- |
+| 图形界面（推荐） | 双击 **`更改数据位置.vbs`**，选个文件夹就行（比如 `D:\我的学习数据`） |
+| 网页里 | 点右上角 **⚙** → 「更改位置」，填一个完整路径 |
+| 命令行 | `node tools/set-data-dir.mjs "D:\我的学习数据" --move` |
+
+改完都要**重启程序**才生效（双击桌面「停止学习工作站」，再双击「学习工作站」）。
+重启时会把现在的数据**复制**过去，**原位置的文件保留**。
+
+### 备份
+
+- 程序**启动时 / 每 5 分钟（有改动时）/ 正常停止时**会自动存一份整份快照到 `_快照\`
+- 网页右上角 **⚙** → 「立即备份一份」，或命令行 `node tools/backup-data.mjs now`
+- 查看所有备份：`node tools/backup-data.mjs list`
+- 恢复：把 `_快照\<某个时间>\` 里的 json 文件复制回数据目录，重启程序
+
+> `data\`、`backups\`、`.runtime\` 都在 `.gitignore` 里，不会被推到 GitHub。
+
+---
+
 ## 四个板块怎么用
 
 ### 专注
@@ -160,47 +205,6 @@
 
 ---
 
-## 数据在哪、怎么备份
-
-所有数据都在程序目录的 **`data`** 文件夹里，是可以用记事本打开看的 JSON 文件：
-
-```
-data/
-  tasks.json           任务、正在进行的计时、学习记录
-  inspirations.json    灵感
-  notes.json           笔记本与笔记
-  health.json          身高体重档案、体重记录、摄入、消耗、喝水
-  _backup/             每次保存前的自动备份（保留最近 30 份）
-  .server-port         当前服务端口（临时文件，启动脚本用）
-  .stop-token          停止令牌（临时文件，防止别的程序乱关）
-```
-
-- **备份**：把整个 `data` 文件夹复制到 U 盘或网盘就是完整备份
-- **换电脑**：把整个文件夹拷过去，双击桌面图标即可，数据原样还在
-- **恢复**：把 `_backup/` 里的某份文件改名覆盖回去就行
-- 万一某个文件坏了，程序会自动把它重命名成 `.broken-时间戳` 保留现场，然后从空白开始，不会连累其他文件
-
-### 自动快照（防止 data 整个被误删）
-
-`data/_backup` 只能防「写坏了」，防不了「整个 data 目录被删掉」。所以程序还会把**整份数据**快照到
-**`backups\`** 目录（注意：在 `data` 的**外面**）：
-
-```
-backups/
-  2026-10-15_213311/   tasks.json  notes.json  inspirations.json  health.json
-  2026-10-16_090412/
-  ...                  最多保留 40 份，内容没变就不重复存
-```
-
-- 程序**启动时**、**每 5 分钟（有改动时）**、**正常停止时**各存一份
-- 空库不存，不会堆一堆空快照
-- 手动备份 / 查看：`node tools/backup-data.mjs now` 和 `node tools/backup-data.mjs list`
-- **恢复**：把 `backups\<某个时间>\` 里的 json 文件复制回 `data\`，重启程序即可
-
-> 无论用哪种方式，`data/` 和 `backups/` 都已在 `.gitignore` 里，不会被推到 GitHub。
-
----
-
 ## 常见问题
 
 **双击图标没反应 / 提示找不到 Node.js？**
@@ -218,6 +222,12 @@ backups/
 **想换个端口？**
 `node server.js --port=9000`
 
+**想指定数据目录（比如临时用别处的数据）？**
+`node server.js --data="D:\某个目录"`。加 `--config-dir="D:\配置目录"` 可以同时隔离设置文件（测试时有用）。
+
+**升级程序时我的数据会被覆盖吗？**
+不会。数据在「文档\学习工作站数据」，替换 `server.js`、`public\` 这些文件完全碰不到它。
+
 **手机/平板能用吗？**
 目前只监听本机（`127.0.0.1`），同一个局域网的其他设备访问不了。
 
@@ -229,6 +239,7 @@ backups/
 server.js                  后端：零依赖 HTTP 服务 + JSON 文件存储 + REST 接口
 启动.vbs / 停止.vbs         双击用的启动器和停止器（后台静默运行）
 创建桌面快捷方式.vbs          在桌面生成上面两个图标
+更改数据位置.vbs             选一个文件夹作为数据目录
 调试模式启动.cmd             保留黑窗口的启动方式，排查问题用
 学习工作站.ico              应用图标
 public/index.html          页面结构
@@ -236,10 +247,26 @@ public/app.css             样式
 public/app.js              前端逻辑
 public/markdown.js         Markdown 渲染器（浏览器和 Node 都能用）
 docs/                      界面截图
+tools/paths.mjs            数据目录 / 配置目录 / 运行时文件的路径解析（server.js 与各脚本共用）
 tools/smoke-test.mjs       接口冒烟测试（147 项）
 tools/markdown-test.mjs    渲染器单元测试（35 项）
+tools/backup-data.mjs      手动备份与查看
 tools/stop.mjs             命令行停止
+tools/set-data-dir.mjs     命令行更改数据位置
 ```
+
+### 数据目录是怎么定的
+
+优先级从高到低：
+
+1. 启动参数 `--data=<目录>`
+2. `%APPDATA%\学习工作站\config.json` 里的 `dataDir`
+3. 默认：`文档\学习工作站数据`
+
+运行时的端口号和停止令牌放在项目的 `.runtime\` 里（它们是临时文件，不跟着数据搬）。
+
+> ⚠️ 改路径解析时，`server.js` 和 `tools/paths.mjs` 两边的规则**必须保持一致**，
+> 否则脚本会找不到数据。
 
 > ⚠️ `启动.cmd` 一类的批处理文件里**不要写中文**：cmd.exe 是按系统代码页（这台机器是 GBK）解析 .cmd 的，
 > 中文会被读乱甚至把命令拆错。中文提示都放在 `server.js` 里输出。
@@ -253,9 +280,13 @@ node tools/smoke-test.mjs 7788
 node tools/markdown-test.mjs
 ```
 
-> ⚠️ **冒烟测试会反复增删记录**。它检测到 `data` 里已经有真实内容时会**直接拒绝运行**，
+> ⚠️ **冒烟测试会反复增删记录**。它检测到库里已经有真实内容时会**直接拒绝运行**，
 > 提醒你复制一份项目到别处、在副本里跑。确实要在有数据的库上跑，确认备份后加 `--force`：
 > 内容不会丢，但记录的 id 和创建时间会变。
+>
+> 想在副本里跑又不碰真实配置，用隔离参数：
+> `node server.js --no-open --port=7943 --data=<临时数据目录> --config-dir=<临时配置目录>`
+
 
 接口一览：
 
@@ -279,3 +310,7 @@ node tools/markdown-test.mjs
 | DELETE | `/api/health/:kind/:id` | 删除身体记录或自定义标签（kind = weights/intake/burn/water/foods/exercises） |
 | PATCH | `/api/health/goals` | 设置喝水、运动消耗目标和三大营养素目标 |
 | POST | `/api/shutdown` | 优雅停止（需要 `X-Stop-Token` 请求头） |
+| POST | `/api/storage/backup` | 立刻存一份整份快照 |
+| POST | `/api/storage/open` | 在资源管理器里打开数据文件夹 |
+| POST | `/api/storage/dir` | 设置新的数据目录（重启后生效） |
+| POST | `/api/storage/reset` | 数据目录改回默认位置 |

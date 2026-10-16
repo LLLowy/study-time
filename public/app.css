@@ -90,6 +90,29 @@ body {
 }
 .icon-btn:hover { border-color: var(--brand); color: var(--brand); }
 
+/* 版本对不上时的提示条 */
+.version-warn {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  background: #fff6e5; border-bottom: 1px solid #f0dcb4;
+  color: #8a6a2f; padding: 9px 20px; font-size: 13px;
+}
+.version-warn .vw-icon { font-size: 15px; }
+.version-warn .vw-text { flex: 1 1 auto; line-height: 1.5; }
+
+/* 设置弹窗里的数据位置 */
+.storage-box {
+  background: #f7f9fc; border-radius: 10px; padding: 11px 13px;
+  font-size: 12.5px; color: var(--ink-2); line-height: 1.7;
+  word-break: break-all;
+}
+.storage-box b { color: var(--ink); }
+.storage-box code {
+  background: #fff; border: 1px solid var(--line-2); border-radius: 5px;
+  padding: 1px 6px; font-size: 12px; font-family: Consolas, monospace;
+}
+.storage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* ---------------- 布局 ---------------- */
 .main { flex: 1 1 auto; min-height: 0; position: relative; }
 .view { display: none; height: 100%; overflow: auto; padding: 18px; }

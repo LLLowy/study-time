@@ -6,6 +6,9 @@ const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
 
 const RING_LEN = 2 * Math.PI * 98;
 
+/** 前端期望的服务端接口版本。对不上说明「页面」和「服务」不是同一版。 */
+const EXPECTED_API_VERSION = 3;
+
 const S = {
   tasks: [],
   active: null,
@@ -14,6 +17,8 @@ const S = {
   notebooks: [],
   notes: [],
   health: null,
+  storage: null,
+  versionMismatch: false,
   clockOffset: 0,
   activeNoteId: null,
   editing: null,          // 当前打开的完整笔记
@@ -195,15 +200,36 @@ function askConfirm({ title, message, okText = '确定', okClass = 'danger', ext
 async function refresh({ keepNote = true } = {}) {
   const data = await api('GET', '/api/all');
   S.clockOffset = data.serverTime - Date.now();
-  S.tasks = data.tasks;
-  S.active = data.active;
-  S.sessions = data.sessions;
-  S.inspirations = data.inspirations;
-  S.notebooks = data.notebooks;
-  S.notes = data.notes;
-  S.health = data.health;
+  S.tasks = data.tasks || [];
+  S.active = data.active || null;
+  S.sessions = data.sessions || [];
+  S.inspirations = data.inspirations || [];
+  S.notebooks = data.notebooks || [];
+  S.notes = data.notes || [];
+  S.health = data.health || null;
+  S.storage = data.storage || null;
+  checkApiVersion(data);
   if (!keepNote) S.editing = null;
   renderAll();
+}
+
+/**
+ * 页面和服务不是同一版时，旧服务缺字段会让页面直接崩。
+ * 这里统一拦一道，给出人话提示，而不是抛一堆 undefined 报错。
+ */
+function checkApiVersion(data) {
+  const got = data.apiVersion;
+  if (got === EXPECTED_API_VERSION) {
+    $('#versionWarn').classList.add('hidden');
+    S.versionMismatch = false;
+    return;
+  }
+  S.versionMismatch = true;
+  const warn = $('#versionWarn');
+  warn.classList.remove('hidden');
+  $('#versionWarnText').innerHTML = got === undefined
+    ? '检测到<b>程序还在跑旧版本</b>：请双击桌面的「停止学习工作站」，再双击「学习工作站」重启一次，页面就能正常用了。'
+    : `页面版本（${EXPECTED_API_VERSION}）和正在运行的服务版本（${got}）不一致，请重启程序。`;
 }
 
 function renderAll() {
@@ -1369,9 +1395,16 @@ function renderPresetChips() {
 /* ---------------- 三大营养素饼图 ---------------- */
 
 function renderMacros() {
-  const m = S.health.macros;
+  const m = S.health && S.health.macros;
   const box = $('#macroChart');
   if (!box) return;
+  if (!m) {
+    // 服务是旧版本时不会有 macros，这里给出提示而不是报错
+    box.innerHTML = '<div class="chart-empty">程序需要重启一次才能显示营养素面板</div>';
+    const st = $('#macroStatus');
+    if (st) st.innerHTML = '<div class="macro-source">检测到正在运行的服务是旧版本，请双击桌面「停止学习工作站」后再双击「学习工作站」重新打开。</div>';
+    return;
+  }
 
   const total = m.kcalTotal;
   const R = 54;
@@ -1518,13 +1551,142 @@ function renderBody() {
     $('#bodySetup').classList.add('hidden');
     $('#bodyMain').classList.remove('hidden');
   }
-  renderMetrics();
-  renderMacros();
-  renderWeightChart();
-  renderWeightList();
-  renderPresetChips();
-  renderLogs();
-  renderWater();
+  try {
+    renderMetrics();
+    renderMacros();
+    renderWeightChart();
+    renderWeightList();
+    renderPresetChips();
+    renderLogs();
+    renderWater();
+  } catch (err) {
+    console.error('身体板块渲染失败：', err);
+    if (!S.versionMismatch) {
+      toast('身体板块渲染出错，可能需要重启程序', 'err');
+    }
+  }
+}
+
+/* ---------------- 设置：数据位置与备份 ---------------- */
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function settingsModal() {
+  const st = S.storage || {};
+
+  const modal = openModal(modalShell({
+    title: '设置',
+    okText: '关闭',
+    cancelText: '',
+    body: `
+      <div class="field">
+        <label>数据存放位置</label>
+        <div class="storage-box" id="stBox">
+          正在读取…
+        </div>
+      </div>
+      <div class="storage-actions">
+        <button class="btn sm primary" id="stBackupNow">立即备份一份</button>
+        <button class="btn sm" id="stOpenFolder">打开数据文件夹</button>
+        <button class="btn sm" id="stChangeDir">更改位置</button>
+        ${st.isCustom ? '<button class="btn sm" id="stResetDir">改回默认位置</button>' : ''}
+      </div>
+      <div class="modal-hint" id="stHint"></div>`,
+  }));
+
+  const box = $('#stBox', modal);
+  const paint = (info) => {
+    const tag = info.fromCommandLine ? '（本次由启动参数指定）' : (info.isCustom ? '（你自定义的位置）' : '（默认位置）');
+    box.innerHTML = `
+      <div>当前：<code>${esc(info.dataDir || '未知')}</code>　<b>${tag}</b></div>
+      <div>快照备份：<b>${info.snapshotCount || 0}</b> 份，和上面这个文件夹放在一起</div>
+      <div>位置设置记在：<code>${esc(info.configFile || '（不可用）')}</code></div>
+      ${info.legacyHasData ? `<div style="color:#b4762a">⚠ 程序目录里的旧 <code>data</code> 还有内容，重启后会自动复制到当前位置（原件保留，确认无误后可自行删除）。</div>` : ''}`;
+  };
+  if (st && st.dataDir) paint(st); else box.textContent = '读取失败，请重启程序后再试';
+
+  $('#stBackupNow', modal).addEventListener('click', async () => {
+    try {
+      const r = await api('POST', '/api/storage/backup');
+      await refresh();
+      paint(S.storage || {});
+      toast(`已备份到 _快照\\${r.name}`, 'ok');
+    } catch (err) { fail(err); }
+  });
+
+  $('#stOpenFolder', modal).addEventListener('click', async () => {
+    try {
+      await api('POST', '/api/storage/open');
+      toast('已在资源管理器里打开', 'ok');
+    } catch (err) { fail(err); }
+  });
+
+  $('#stChangeDir', modal).addEventListener('click', () => {
+    closeModal();
+    changeDirModal();
+  });
+
+  const reset = $('#stResetDir', modal);
+  if (reset) {
+    reset.addEventListener('click', async () => {
+      const yes = await askConfirm({
+        title: '改回默认位置',
+        message: '数据会重新存回「文档\\学习工作站数据」。当前位置的文件不会被删除，重启后生效。',
+        okText: '改回默认',
+      });
+      if (yes !== 'ok') return;
+      try {
+        await api('POST', '/api/storage/reset');
+        closeModal();
+        await refresh();
+        toast('已改回默认位置，重启程序后生效', 'ok');
+      } catch (err) { fail(err); }
+    });
+  }
+}
+
+function changeDirModal() {
+  const cur = (S.storage && S.storage.dataDir) || '';
+  const def = (S.storage && S.storage.defaultDataDir) || '';
+  const modal = openModal(modalShell({
+    title: '更改数据存放位置',
+    okText: '保存并重启提示',
+    body: `
+      <div class="field">
+        <label>新位置（完整路径）</label>
+        <input class="input" id="cdDir" placeholder="例如 D:\\我的学习数据" value="">
+        <span class="modal-hint">
+          当前：<code>${esc(cur)}</code><br>
+          不填就直接用默认位置：<code>${esc(def)}</code>
+        </span>
+      </div>
+      <div class="modal-hint">
+        保存后<b>重启程序才生效</b>。重启时会把现在的数据<b>复制</b>到新位置，<b>原来位置的文件不会被删</b>，确认没问题后你可以自己清理。
+      </div>
+      <div class="preset-row">
+        <button type="button" class="preset" id="cdUseDefault">用默认位置（文档里）</button>
+      </div>`,
+  }));
+  setTimeout(() => $('#cdDir', modal).focus(), 40);
+  $('#cdUseDefault', modal).addEventListener('click', () => { $('#cdDir', modal).value = def; });
+
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const dir = $('#cdDir', modal).value.trim();
+    if (!dir) { toast('请填写路径，或点「用默认位置」', 'err'); return; }
+    try {
+      const r = await api('POST', '/api/storage/dir', { dir });
+      closeModal();
+      await refresh();
+      toast(r.message || '已保存，重启程序后生效', 'ok');
+    } catch (err) { fail(err); }
+  });
 }
 
 /* ---------------- 身体管理的操作 ---------------- */
@@ -1920,6 +2082,11 @@ function bind() {
   $('#tabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.tab');
     if (tab) switchView(tab.dataset.view);
+  });
+
+  $('#btnSettings').addEventListener('click', settingsModal);
+  $('#btnVersionWarnClose').addEventListener('click', () => {
+    $('#versionWarn').classList.add('hidden');
   });
 
   $('#btnHelp').addEventListener('click', () => {
