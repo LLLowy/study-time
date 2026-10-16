@@ -148,7 +148,14 @@ const DEFAULT_STATE = () => ({
     intake: [],
     burn: [],
     water: [],
-    goals: { waterMl: 2000, intakeKcal: null, burnKcal: null },
+    customFoods: [],
+    customBurns: [],
+    goals: {
+      waterMl: 2000,
+      intakeKcal: null,
+      burnKcal: null,
+      macros: { proteinG: null, carbsG: null, fatG: null },
+    },
   },
 });
 
@@ -390,6 +397,49 @@ function sumMl(list, date) {
   return Math.round(list.filter((r) => r.date === date).reduce((s, r) => s + (r.ml || 0), 0));
 }
 
+/** 每克营养素的热量：蛋白质 4、碳水 4、脂肪 9。 */
+const KCAL_PER_G = { proteinG: 4, carbsG: 4, fatG: 9 };
+
+function sumMacros(list, date) {
+  const out = { proteinG: 0, carbsG: 0, fatG: 0 };
+  for (const r of list) {
+    if (r.date !== date) continue;
+    out.proteinG += r.proteinG || 0;
+    out.carbsG += r.carbsG || 0;
+    out.fatG += r.fatG || 0;
+  }
+  return {
+    proteinG: Math.round(out.proteinG * 10) / 10,
+    carbsG: Math.round(out.carbsG * 10) / 10,
+    fatG: Math.round(out.fatG * 10) / 10,
+  };
+}
+
+/**
+ * 按体重和每日总消耗给一套建议目标：
+ * 蛋白质 1.6 g/kg，脂肪占总热量 25%，剩下的给碳水。
+ */
+function suggestMacros(weightKg, tdee) {
+  if (!weightKg || !tdee) return null;
+  const proteinG = Math.round(weightKg * 1.6);
+  const fatG = Math.round((tdee * 0.25) / KCAL_PER_G.fatG);
+  const carbsG = Math.max(0, Math.round((tdee - proteinG * 4 - fatG * 9) / 4));
+  return { proteinG, carbsG, fatG };
+}
+
+/** 用户自己设了就用自己的，没设就用建议值。 */
+function resolveMacroTargets(suggested) {
+  const g = (state.health.goals && state.health.goals.macros) || {};
+  const pick = (key) => (g[key] === null || g[key] === undefined ? (suggested ? suggested[key] : null) : g[key]);
+  const custom = ['proteinG', 'carbsG', 'fatG'].some((k) => g[k] !== null && g[k] !== undefined);
+  return {
+    proteinG: pick('proteinG'),
+    carbsG: pick('carbsG'),
+    fatG: pick('fatG'),
+    source: custom ? 'custom' : (suggested ? 'suggested' : 'none'),
+  };
+}
+
 function publicHealth() {
   const h = state.health;
   const profile = h.profile;
@@ -432,6 +482,31 @@ function publicHealth() {
   const todayIntake = sumKcal(h.intake, today);
   const todayBurn = sumKcal(h.burn, today);
   const todayWater = sumMl(h.water, today);
+  const todayMacros = sumMacros(h.intake, today);
+
+  const suggested = computed ? suggestMacros(computed.latestWeightKg, computed.tdee) : null;
+  const macroTargets = resolveMacroTargets(suggested);
+
+  // 饼图按「各大营养素贡献的热量」算占比
+  const macroKcal = {
+    proteinG: Math.round(todayMacros.proteinG * KCAL_PER_G.proteinG),
+    carbsG: Math.round(todayMacros.carbsG * KCAL_PER_G.carbsG),
+    fatG: Math.round(todayMacros.fatG * KCAL_PER_G.fatG),
+  };
+  const macroKcalTotal = macroKcal.proteinG + macroKcal.carbsG + macroKcal.fatG;
+  const macroStatus = ['proteinG', 'carbsG', 'fatG'].map((key) => {
+    const target = macroTargets[key];
+    const actual = todayMacros[key];
+    return {
+      key,
+      label: key === 'proteinG' ? '蛋白质' : key === 'carbsG' ? '碳水化合物' : '脂肪',
+      actualG: actual,
+      targetG: target,
+      percent: target ? Math.round((actual / target) * 100) : null,
+      reached: target ? actual >= target : null,
+      remainG: target ? Math.max(0, Math.round((target - actual) * 10) / 10) : null,
+    };
+  });
 
   const days = [];
   for (let i = 6; i >= 0; i -= 1) {
@@ -452,7 +527,18 @@ function publicHealth() {
     intake: h.intake.slice(0, 1000),
     burn: h.burn.slice(0, 1000),
     water: h.water.slice(0, 2000),
+    customFoods: h.customFoods || [],
+    customBurns: h.customBurns || [],
     computed,
+    macros: {
+      today: todayMacros,
+      targets: macroTargets,
+      suggested,
+      kcal: macroKcal,
+      kcalTotal: macroKcalTotal,
+      status: macroStatus,
+      allReached: macroStatus.every((s) => s.reached !== false) && macroStatus.some((s) => s.targetG),
+    },
     today: {
       date: today,
       intakeKcal: todayIntake,
@@ -897,6 +983,7 @@ route('POST', '/api/health/weights', async (_p, body) => {
 
 route('PATCH', '/api/health/goals', async (_p, body) => {
   const g = state.health.goals;
+  if (!g.macros) g.macros = { proteinG: null, carbsG: null, fatG: null };
   if (body.waterMl !== undefined) g.waterMl = num(body.waterMl, { min: 0, max: 10000, field: '每日喝水目标' });
   if (body.intakeKcal !== undefined) {
     g.intakeKcal = body.intakeKcal === null || body.intakeKcal === ''
@@ -908,22 +995,55 @@ route('PATCH', '/api/health/goals', async (_p, body) => {
       ? null
       : num(body.burnKcal, { min: 0, max: 20000, field: '每日消耗目标' });
   }
+  // 三大营养素目标：传 null 表示改回「用系统建议值」
+  if (body.macros !== undefined) {
+    const m = body.macros || {};
+    for (const key of ['proteinG', 'carbsG', 'fatG']) {
+      if (m[key] === undefined) continue;
+      g.macros[key] = m[key] === null || m[key] === ''
+        ? null
+        : num(m[key], { min: 0, max: 2000, field: '营养素目标（克）' });
+    }
+  }
   persist('health');
   return { goals: g, health: publicHealth() };
 });
 
-/** 体重 / 摄入 / 消耗 / 喝水 四类记录共用一套删除逻辑。 */
+/** 体重 / 摄入 / 消耗 / 喝水 四类记录 + 自定义标签 共用一套删除逻辑。 */
 const HEALTH_KINDS = {
   weights: { key: 'weights', label: '体重记录' },
   intake: { key: 'intake', label: '摄入记录' },
   burn: { key: 'burn', label: '消耗记录' },
   water: { key: 'water', label: '喝水记录' },
+  foods: { key: 'customFoods', label: '自定义食物标签' },
+  exercises: { key: 'customBurns', label: '自定义运动标签' },
 };
+
+/** 解析可选的三项营养素输入，缺省算 0。 */
+function macroArgs(body) {
+  const pick = (key, label) => {
+    const v = body[key];
+    if (v === undefined || v === null || v === '') return 0;
+    return Math.round(num(v, { min: 0, max: 2000, field: label }) * 10) / 10;
+  };
+  return {
+    proteinG: pick('proteinG', '蛋白质（克）'),
+    carbsG: pick('carbsG', '碳水（克）'),
+    fatG: pick('fatG', '脂肪（克）'),
+  };
+}
 
 route('POST', '/api/health/intake', async (_p, body) => {
   const name = cleanText(body.name || '手动填写', { max: 60, field: '名称' });
   const kcal = num(body.kcal, { min: 0, max: 10000, field: '热量（千卡）' });
-  const rec = { id: newId('fi'), date: dateArg(body.date), name, kcal: Math.round(kcal), createdAt: now() };
+  const rec = {
+    id: newId('fi'),
+    date: dateArg(body.date),
+    name,
+    kcal: Math.round(kcal),
+    ...macroArgs(body),
+    createdAt: now(),
+  };
   state.health.intake.unshift(rec);
   if (state.health.intake.length > 5000) state.health.intake.length = 5000;
   persist('health');
@@ -948,6 +1068,45 @@ route('POST', '/api/health/burn', async (_p, body) => {
   if (state.health.burn.length > 5000) state.health.burn.length = 5000;
   persist('health');
   return { record: rec, health: publicHealth() };
+});
+
+/* --- 自定义标签：自己常用的食物 / 运动，存下来下次一键记录 --- */
+
+route('POST', '/api/health/foods', async (_p, body) => {
+  const name = cleanText(body.name, { max: 60, field: '标签名称' });
+  if (!name) throw new HttpError(400, '标签名称不能为空');
+  const kcal = num(body.kcal, { min: 0, max: 10000, field: '热量（千卡）' });
+  const food = {
+    id: newId('cf'),
+    name,
+    kcal: Math.round(kcal),
+    ...macroArgs(body),
+    createdAt: now(),
+  };
+  if (!state.health.customFoods) state.health.customFoods = [];
+  state.health.customFoods.push(food);
+  persist('health');
+  return { food, health: publicHealth() };
+});
+
+route('POST', '/api/health/exercises', async (_p, body) => {
+  const name = cleanText(body.name, { max: 60, field: '标签名称' });
+  if (!name) throw new HttpError(400, '标签名称不能为空');
+  const kcal = num(body.kcal, { min: 0, max: 10000, field: '热量（千卡）' });
+  const minutes = body.minutes === undefined || body.minutes === ''
+    ? null
+    : num(body.minutes, { min: 0, max: 1440, field: '时长（分钟）' });
+  const ex = {
+    id: newId('ce'),
+    name,
+    kcal: Math.round(kcal),
+    minutes: minutes === null ? null : Math.round(minutes),
+    createdAt: now(),
+  };
+  if (!state.health.customBurns) state.health.customBurns = [];
+  state.health.customBurns.push(ex);
+  persist('health');
+  return { exercise: ex, health: publicHealth() };
 });
 
 route('POST', '/api/health/water', async (_p, body) => {

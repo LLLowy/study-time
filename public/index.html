@@ -204,36 +204,49 @@
 
       <div class="body-col">
         <section class="panel log-panel">
-          <div class="panel-head">
-            <h2>摄入 <span class="muted" id="intakeToday"></span></h2>
-            <span class="pill" id="intakeLeft"></span>
+          <div class="panel-head is-stacked">
+            <div class="ph-line">
+              <h2>摄入 <span class="muted" id="intakeToday"></span></h2>
+              <span class="pill" id="intakeLeft"></span>
+            </div>
+            <div class="ph-line">
+              <button class="btn sm" id="btnNewFoodTag">＋ 自定义标签</button>
+              <button class="btn sm primary" id="btnManualIntake">手动记录</button>
+            </div>
           </div>
           <div class="preset-section">
-            <div class="preset-label">常见食物（参考值，点一下即记录）</div>
+            <div class="preset-label">点一下即记录　·　自己加的标签右上角有 × 可以删掉</div>
             <div class="chip-row" id="foodPresets"></div>
           </div>
-          <div class="manual-row">
-            <input class="input sm" id="intakeName" placeholder="名称（可不填）">
-            <input class="input sm" id="intakeKcal" type="number" min="0" placeholder="千卡">
-            <button class="btn primary sm" id="btnAddIntake">手动添加</button>
-          </div>
           <div class="log-list" id="intakeList"></div>
+        </section>
+
+        <section class="panel macro-panel">
+          <div class="panel-head">
+            <h2>三大营养素</h2>
+            <span class="muted">按今天已记录的摄入计算</span>
+          </div>
+          <div class="macro-body">
+            <div class="chart-box" id="macroChart"></div>
+            <div class="macro-status" id="macroStatus"></div>
+          </div>
         </section>
       </div>
 
       <div class="body-col">
         <section class="panel log-panel">
-          <div class="panel-head">
-            <h2>消耗 <span class="muted" id="burnToday"></span></h2>
+          <div class="panel-head is-stacked">
+            <div class="ph-line">
+              <h2>消耗 <span class="muted" id="burnToday"></span></h2>
+            </div>
+            <div class="ph-line">
+              <button class="btn sm" id="btnNewExerciseTag">＋ 自定义标签</button>
+              <button class="btn sm primary" id="btnManualBurn">手动记录</button>
+            </div>
           </div>
           <div class="preset-section">
-            <div class="preset-label">常见运动（按你当前体重、30 分钟估算，点一下即记录）</div>
+            <div class="preset-label">按你当前体重、30 分钟估算，点一下即记录</div>
             <div class="chip-row" id="burnPresets"></div>
-          </div>
-          <div class="manual-row">
-            <input class="input sm" id="burnName" placeholder="名称（可不填）">
-            <input class="input sm" id="burnKcal" type="number" min="0" placeholder="千卡">
-            <button class="btn primary sm" id="btnAddBurn">手动添加</button>
           </div>
           <div class="log-list" id="burnList"></div>
         </section>

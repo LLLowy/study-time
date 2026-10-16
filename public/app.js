@@ -1029,24 +1029,27 @@ async function createNote() {
 /* 身体管理                                                          */
 /* ---------------------------------------------------------------- */
 
-/** 常见食物热量参考值（千卡）。数值为常见份量的近似值，仅供参考。 */
+/**
+ * 常见食物参考值（千卡 + 三大营养素克数）。
+ * 数值为常见份量的近似值；蛋白质/碳水按 4 kcal/g、脂肪按 9 kcal/g 折算后与总热量大致吻合。
+ */
 const FOOD_PRESETS = [
-  { name: '米饭 1 碗', kcal: 200 },
-  { name: '馒头 1 个', kcal: 220 },
-  { name: '面条 1 碗', kcal: 280 },
-  { name: '包子 1 个', kcal: 200 },
-  { name: '鸡蛋 1 个', kcal: 70 },
-  { name: '牛奶 250ml', kcal: 135 },
-  { name: '豆浆 1 杯', kcal: 80 },
-  { name: '酸奶 1 杯', kcal: 100 },
-  { name: '鸡胸肉 100g', kcal: 133 },
-  { name: '炒青菜 1 份', kcal: 120 },
-  { name: '苹果 1 个', kcal: 90 },
-  { name: '香蕉 1 根', kcal: 90 },
-  { name: '全麦面包 1 片', kcal: 80 },
-  { name: '奶茶 1 杯', kcal: 350 },
-  { name: '薯条 中份', kcal: 320 },
-  { name: '可乐 330ml', kcal: 140 },
+  { name: '米饭 1 碗', kcal: 200, proteinG: 4, carbsG: 44, fatG: 0.4 },
+  { name: '馒头 1 个', kcal: 220, proteinG: 7, carbsG: 47, fatG: 1 },
+  { name: '面条 1 碗', kcal: 280, proteinG: 9, carbsG: 55, fatG: 2 },
+  { name: '包子 1 个', kcal: 200, proteinG: 7, carbsG: 30, fatG: 5 },
+  { name: '鸡蛋 1 个', kcal: 70, proteinG: 6, carbsG: 0.5, fatG: 5 },
+  { name: '牛奶 250ml', kcal: 135, proteinG: 7, carbsG: 10, fatG: 7 },
+  { name: '豆浆 1 杯', kcal: 80, proteinG: 5, carbsG: 6, fatG: 3 },
+  { name: '酸奶 1 杯', kcal: 100, proteinG: 5, carbsG: 12, fatG: 3 },
+  { name: '鸡胸肉 100g', kcal: 133, proteinG: 25, carbsG: 0, fatG: 3 },
+  { name: '炒青菜 1 份', kcal: 120, proteinG: 3, carbsG: 8, fatG: 8 },
+  { name: '苹果 1 个', kcal: 90, proteinG: 0.4, carbsG: 23, fatG: 0.3 },
+  { name: '香蕉 1 根', kcal: 90, proteinG: 1, carbsG: 22, fatG: 0.3 },
+  { name: '全麦面包 1 片', kcal: 80, proteinG: 4, carbsG: 14, fatG: 1 },
+  { name: '奶茶 1 杯', kcal: 350, proteinG: 3, carbsG: 60, fatG: 11 },
+  { name: '薯条 中份', kcal: 320, proteinG: 4, carbsG: 40, fatG: 15 },
+  { name: '可乐 330ml', kcal: 140, proteinG: 0, carbsG: 35, fatG: 0 },
 ];
 
 /** 常见运动的 MET 值（代谢当量）。消耗 = MET × 体重kg × 小时数。 */
@@ -1069,10 +1072,59 @@ const EXERCISE_PRESETS = [
 
 const PRESET_MINUTES = 30;
 
+/** 三大营养素展示配置。饼图按「各自贡献的热量」算占比。 */
+const MACROS = [
+  { key: 'proteinG', label: '蛋白质', color: '#3f6ef0', kcalPerG: 4 },
+  { key: 'carbsG', label: '碳水', color: '#d99326', kcalPerG: 4 },
+  { key: 'fatG', label: '脂肪', color: '#d9534f', kcalPerG: 9 },
+];
+
 function foodKcal(p) { return p.kcal; }
 function exerciseKcal(met, weightKg, minutes = PRESET_MINUTES) {
   if (!weightKg) return 0;
   return Math.round(met * weightKg * (minutes / 60));
+}
+
+/** 内置食物标签 + 自己存的食物标签，统一成一种结构。 */
+function allFoodTags() {
+  const custom = (S.health && S.health.customFoods) || [];
+  return [
+    ...FOOD_PRESETS.map((p, i) => ({ ...p, id: `builtin-${i}`, builtin: true, customIndex: null })),
+    ...custom.map((p, i) => ({
+      id: p.id,
+      name: p.name,
+      kcal: p.kcal,
+      proteinG: p.proteinG || 0,
+      carbsG: p.carbsG || 0,
+      fatG: p.fatG || 0,
+      builtin: false,
+      customIndex: i,
+    })),
+  ];
+}
+
+function allExerciseTags() {
+  const custom = (S.health && S.health.customBurns) || [];
+  const w = S.health && S.health.computed ? S.health.computed.latestWeightKg : null;
+  return [
+    ...EXERCISE_PRESETS.map((p, i) => ({
+      id: `builtin-${i}`,
+      name: p.name,
+      kcal: exerciseKcal(p.met, w),
+      minutes: PRESET_MINUTES,
+      met: p.met,
+      builtin: true,
+      customIndex: null,
+    })),
+    ...custom.map((p, i) => ({
+      id: p.id,
+      name: p.name,
+      kcal: p.kcal,
+      minutes: p.minutes,
+      builtin: false,
+      customIndex: i,
+    })),
+  ];
 }
 
 /* ---------------- 档案 ---------------- */
@@ -1296,14 +1348,101 @@ function renderWeightList() {
 
 /* ---------------- 摄入 / 消耗 / 喝水 ---------------- */
 
+/** 标签：点一下记账；自己存的标签（非内置）右上角有个小 × 可以删掉。 */
+function chipHtml(tag, kind) {
+  const attr = kind === 'food' ? `data-food="${tag.id}"` : `data-ex="${tag.id}"`;
+  const macros = kind === 'food'
+    ? `蛋白 ${tag.proteinG}g · 碳水 ${tag.carbsG}g · 脂肪 ${tag.fatG}g`
+    : `${tag.minutes || PRESET_MINUTES} 分钟`;
+  const title = `${tag.name}　${tag.kcal} 千卡　${macros}`;
+  const del = tag.builtin
+    ? ''
+    : `<span class="chip-del" data-del-tag="${tag.id}" data-kind="${kind}" title="删除这个自定义标签">×</span>`;
+  return `<button class="chip${tag.builtin ? '' : ' is-custom'}" ${attr} title="${esc(title)}">${esc(tag.name)}<span class="chip-kcal">${tag.kcal}</span>${del}</button>`;
+}
+
 function renderPresetChips() {
-  const cw = S.health.computed ? S.health.computed.latestWeightKg : null;
-  $('#foodPresets').innerHTML = FOOD_PRESETS.map((p, i) => `
-    <button class="chip" data-food="${i}">${esc(p.name)}<span class="chip-kcal">${foodKcal(p)}</span></button>`).join('');
-  $('#burnPresets').innerHTML = EXERCISE_PRESETS.map((p, i) => {
-    const k = exerciseKcal(p.met, cw);
-    return `<button class="chip" data-ex="${i}" title="${esc(p.name)} ${PRESET_MINUTES} 分钟约消耗 ${k} 千卡（按 ${cw || '—'} kg 估算）">${esc(p.name)}<span class="chip-kcal">${k}</span></button>`;
+  $('#foodPresets').innerHTML = allFoodTags().map((t) => chipHtml(t, 'food')).join('');
+  $('#burnPresets').innerHTML = allExerciseTags().map((t) => chipHtml(t, 'exercise')).join('');
+}
+
+/* ---------------- 三大营养素饼图 ---------------- */
+
+function renderMacros() {
+  const m = S.health.macros;
+  const box = $('#macroChart');
+  if (!box) return;
+
+  const total = m.kcalTotal;
+  const R = 54;
+  const CX = 62;
+  const CY = 62;
+  const STROKE = 22;
+
+  if (!total) {
+    box.innerHTML = `
+      <svg viewBox="0 0 124 124" class="donut">
+        <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="#eef0f3" stroke-width="${STROKE}"/>
+        <text x="${CX}" y="${CY - 2}" text-anchor="middle" font-size="15" font-weight="700" fill="#98a1b0">—</text>
+        <text x="${CX}" y="${CY + 15}" text-anchor="middle" font-size="10" fill="#98a1b0">还没有摄入</text>
+      </svg>`;
+  } else {
+    const circumference = 2 * Math.PI * R;
+    let offset = 0;
+    const slices = MACROS.map((mac) => {
+      const val = m.kcal[mac.key] || 0;
+      const frac = val / total;
+      const len = frac * circumference;
+      const seg = `<circle cx="${CX}" cy="${CY}" r="${R}" fill="none"
+          stroke="${mac.color}" stroke-width="${STROKE}"
+          stroke-dasharray="${len.toFixed(2)} ${(circumference - len).toFixed(2)}"
+          stroke-dashoffset="${(-offset).toFixed(2)}"
+          transform="rotate(-90 ${CX} ${CY})"><title>${mac.label} ${val} 千卡（${Math.round(frac * 100)}%）</title></circle>`;
+      offset += len;
+      return seg;
+    }).join('');
+    const pct = MACROS.map((mac) => {
+      const p = Math.round(((m.kcal[mac.key] || 0) / total) * 100);
+      return `<span class="macro-pct"><i style="background:${mac.color}"></i>${mac.label} ${p}%</span>`;
+    }).join('');
+    box.innerHTML = `
+      <svg viewBox="0 0 124 124" class="donut" role="img" aria-label="三大营养素供能占比">
+        ${slices}
+        <text x="${CX}" y="${CY - 1}" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2430">${total}</text>
+        <text x="${CX}" y="${CY + 14}" text-anchor="middle" font-size="9.5" fill="#98a1b0">千卡来自三大营养素</text>
+      </svg>
+      <div class="macro-percent">${pct}</div>`;
+  }
+
+  // 图表下面：达标情况
+  const status = m.status;
+  const targets = m.targets;
+  const sourceLabel = targets.source === 'custom' ? '你设定的目标'
+    : targets.source === 'suggested' ? '系统按体重和消耗给你算的建议值'
+    : '还没有目标';
+  const hasTarget = ['proteinG', 'carbsG', 'fatG'].some((k) => targets[k] != null);
+
+  const rows = status.map((s) => {
+    const pct = s.percent == null ? null : Math.min(100, s.percent);
+    const cls = s.reached == null ? '' : (s.reached ? 'is-ok' : 'is-low');
+    const right = s.targetG == null
+      ? `${s.actualG} g`
+      : `${s.actualG} / ${s.targetG} g　<span class="macro-tag ${s.reached ? 'ok' : 'low'}">${s.reached ? '已达标' : `还差 ${s.remainG} g`}</span>`;
+    return `
+      <div class="macro-row">
+        <div class="macro-head">
+          <span>${s.label}</span>
+          <span>${right}</span>
+        </div>
+        <div class="gb-track"><div class="gb-fill ${cls}" style="width:${pct == null ? 0 : pct}%"></div></div>
+      </div>`;
   }).join('');
+
+  $('#macroStatus').innerHTML = `
+    <div class="macro-source">${sourceLabel}${hasTarget ? '' : '（点「设定目标」可以自己填）'}
+      ${hasTarget && m.allReached ? '<b style="color:#1f8a5b">　🎉 三大营养素今天都达标了</b>' : ''}
+    </div>
+    ${rows}`;
 }
 
 function renderLogs() {
@@ -1318,12 +1457,18 @@ function renderLogs() {
   $('#intakeLeft').style.background = left == null ? '' : left >= 0 ? 'var(--brand-soft)' : 'var(--red-soft)';
   $('#intakeLeft').style.color = left == null ? '' : left >= 0 ? 'var(--brand)' : 'var(--red)';
 
-  $('#intakeList').innerHTML = intake.length ? intake.map((r) => `
+  $('#intakeList').innerHTML = intake.length ? intake.map((r) => {
+    const mac = [];
+    if (r.proteinG) mac.push(`蛋 ${r.proteinG}`);
+    if (r.carbsG) mac.push(`碳 ${r.carbsG}`);
+    if (r.fatG) mac.push(`脂 ${r.fatG}`);
+    return `
     <div class="log-row" data-kind="intake" data-id="${r.id}">
-      <span class="l-name">${esc(r.name)}</span>
+      <span class="l-name">${esc(r.name)}${mac.length ? `<span class="l-macros">${mac.join(' · ')}</span>` : ''}</span>
       <span class="l-kcal">${r.kcal} 千卡</span>
       <button class="mini danger" data-act="del">删除</button>
-    </div>`).join('') : '<div class="log-empty">今天还没记录摄入。点上面的食物标签，或手动填写。</div>';
+    </div>`;
+  }).join('') : '<div class="log-empty">今天还没记录摄入。点上面的食物标签，或点「手动记录」。</div>';
 
   $('#burnList').innerHTML = burn.length ? burn.map((r) => `
     <div class="log-row" data-kind="burn" data-id="${r.id}">
@@ -1374,6 +1519,7 @@ function renderBody() {
     $('#bodyMain').classList.remove('hidden');
   }
   renderMetrics();
+  renderMacros();
   renderWeightChart();
   renderWeightList();
   renderPresetChips();
@@ -1425,9 +1571,15 @@ function addWeightModal() {
   setTimeout(() => $('#wKg', modal).focus(), 40);
 }
 
-async function addIntake(name, kcal) {
+async function addIntake(name, kcal, macros) {
   try {
-    await api('POST', '/api/health/intake', { name, kcal });
+    await api('POST', '/api/health/intake', {
+      name,
+      kcal,
+      proteinG: (macros && macros.proteinG) || 0,
+      carbsG: (macros && macros.carbsG) || 0,
+      fatG: (macros && macros.fatG) || 0,
+    });
     await refresh();
     toast(`已记录 ${name} ${kcal} 千卡`, 'ok');
   } catch (err) { fail(err); }
@@ -1472,6 +1624,9 @@ function waterCustomModal() {
 
 function goalsModal() {
   const g = S.health.goals;
+  const gm = g.macros || {};
+  const sug = S.health.macros.suggested;
+  const m = S.health.macros.targets;
   const modal = openModal(modalShell({
     title: '设定每日目标',
     okText: '保存',
@@ -1480,20 +1635,271 @@ function goalsModal() {
         <input class="input" id="gWater" type="number" min="0" max="10000" value="${g.waterMl ?? 2000}"></div>
       <div class="field"><label>每日运动消耗目标（千卡，可不填）</label>
         <input class="input" id="gBurn" type="number" min="0" max="20000" value="${g.burnKcal ?? ''}"></div>
-      <div class="modal-hint">摄入目标默认用你的每日总消耗 TDEE，不需要单独填。</div>`,
+
+      <div class="field">
+        <label>三大营养素每日目标（克）</label>
+        <div class="row-inline">
+          <div class="field"><input class="input" id="gProtein" type="number" min="0" max="2000" placeholder="蛋白质" value="${gm.proteinG ?? ''}"></div>
+          <div class="field"><input class="input" id="gCarbs" type="number" min="0" max="2000" placeholder="碳水" value="${gm.carbsG ?? ''}"></div>
+          <div class="field"><input class="input" id="gFat" type="number" min="0" max="2000" placeholder="脂肪" value="${gm.fatG ?? ''}"></div>
+        </div>
+        <div class="preset-row">
+          <button type="button" class="preset" id="gAuto">用系统建议值${sug ? `（蛋白 ${sug.proteinG} / 碳水 ${sug.carbsG} / 脂肪 ${sug.fatG}）` : ''}</button>
+        </div>
+        <span class="modal-hint">
+          留空 = 用系统建议值。当前生效：蛋白质 ${m.proteinG ?? '—'} g、碳水 ${m.carbsG ?? '—'} g、脂肪 ${m.fatG ?? '—'} g。
+          ${sug ? '系统建议值按体重 ×1.6 g 蛋白质、脂肪占总热量 25%、其余给碳水来算。' : '填了体重和档案后才有系统建议值。'}
+        </span>
+      </div>
+      <div class="modal-hint">热量摄入目标默认用你的每日总消耗 TDEE，不需要单独填。</div>`,
   }));
+
+  $('#gAuto', modal).addEventListener('click', () => {
+    if (!sug) { toast('先填好档案和体重才有建议值', 'err'); return; }
+    $('#gProtein', modal).value = sug.proteinG;
+    $('#gCarbs', modal).value = sug.carbsG;
+    $('#gFat', modal).value = sug.fatG;
+  });
+
   modal.addEventListener('click', async (e) => {
     const act = e.target.closest('[data-modal]');
     if (!act) return;
     if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const macroVal = (id) => {
+      const v = $(id, modal).value.trim();
+      return v === '' ? null : Number(v);
+    };
     try {
       await api('PATCH', '/api/health/goals', {
         waterMl: Number($('#gWater', modal).value) || 0,
         burnKcal: $('#gBurn', modal).value === '' ? null : Number($('#gBurn', modal).value),
+        macros: {
+          proteinG: macroVal('#gProtein'),
+          carbsG: macroVal('#gCarbs'),
+          fatG: macroVal('#gFat'),
+        },
       });
       closeModal();
       await refresh();
       toast('目标已保存', 'ok');
+    } catch (err) { fail(err); }
+  });
+}
+
+/* ---------------- 自定义标签 ---------------- */
+
+function foodTagModal(existing) {
+  const isEdit = Boolean(existing);
+  const t = existing || { name: '', kcal: '', proteinG: '', carbsG: '', fatG: '' };
+  const modal = openModal(modalShell({
+    title: isEdit ? '编辑常用食物标签' : '新建常用食物标签',
+    okText: '保存标签',
+    body: `
+      <div class="field">
+        <label>标签名称</label>
+        <input class="input" id="fName" maxlength="60" placeholder="例如：食堂三两米饭 / 妈妈做的红烧肉" value="${esc(t.name)}">
+      </div>
+      <div class="field">
+        <label>热量（千卡）</label>
+        <input class="input" id="fKcal" type="number" min="0" max="10000" placeholder="例如 250" value="${t.kcal === 0 ? '' : esc(String(t.kcal ?? ''))}">
+      </div>
+      <div class="field">
+        <label>三大营养素含量（克，可不填）</label>
+        <div class="row-inline">
+          <div class="field"><input class="input" id="fProtein" type="number" step="0.1" min="0" placeholder="蛋白质" value="${t.proteinG === 0 ? '' : esc(String(t.proteinG ?? ''))}"></div>
+          <div class="field"><input class="input" id="fCarbs" type="number" step="0.1" min="0" placeholder="碳水" value="${t.carbsG === 0 ? '' : esc(String(t.carbsG ?? ''))}"></div>
+          <div class="field"><input class="input" id="fFat" type="number" step="0.1" min="0" placeholder="脂肪" value="${t.fatG === 0 ? '' : esc(String(t.fatG ?? ''))}"></div>
+        </div>
+        <span class="modal-hint">按 蛋白质/碳水 4 kcal/g、脂肪 9 kcal/g 折算。保存后这个标签会一直留在「常见食物」那一排，下次点一下就记账。</span>
+      </div>`,
+  }));
+  setTimeout(() => $('#fName', modal).focus(), 40);
+
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const name = $('#fName', modal).value.trim();
+    const kcal = Number($('#fKcal', modal).value);
+    if (!name) { toast('请填写标签名称', 'err'); return; }
+    if (!Number.isFinite(kcal) || kcal < 0 || $('#fKcal', modal).value === '') { toast('请填写热量', 'err'); return; }
+    if (isEdit) {
+      // 编辑＝先删旧的再存新的，保持接口简单
+      try {
+        await api('DELETE', `/api/health/foods/${existing.id}`);
+      } catch { /* 旧的可能已经没了 */ }
+    }
+    try {
+      await api('POST', '/api/health/foods', {
+        name,
+        kcal: Math.round(kcal),
+        proteinG: $('#fProtein', modal).value || 0,
+        carbsG: $('#fCarbs', modal).value || 0,
+        fatG: $('#fFat', modal).value || 0,
+      });
+      closeModal();
+      await refresh();
+      toast('标签已保存，以后点一下就能记账', 'ok');
+    } catch (err) { fail(err); }
+  });
+}
+
+function exerciseTagModal(existing) {
+  const isEdit = Boolean(existing);
+  const t = existing || { name: '', kcal: '', minutes: 30 };
+  const modal = openModal(modalShell({
+    title: isEdit ? '编辑常用运动标签' : '新建常用运动标签',
+    okText: '保存标签',
+    body: `
+      <div class="field">
+        <label>标签名称</label>
+        <input class="input" id="eName" maxlength="60" placeholder="例如：游泳 1000 米 / 羽毛球双打" value="${esc(t.name)}">
+      </div>
+      <div class="row-inline">
+        <div class="field">
+          <label>消耗（千卡）</label>
+          <input class="input" id="eKcal" type="number" min="0" max="10000" placeholder="例如 260" value="${t.kcal === 0 ? '' : esc(String(t.kcal ?? ''))}">
+        </div>
+        <div class="field">
+          <label>时长（分钟，可不填）</label>
+          <input class="input" id="eMin" type="number" min="0" max="1440" placeholder="例如 40" value="${t.minutes ?? ''}">
+        </div>
+      </div>
+      <span class="modal-hint">保存后这个标签会一直留在「常见运动」那一排，下次点一下就记账。</span>`,
+  }));
+  setTimeout(() => $('#eName', modal).focus(), 40);
+
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const name = $('#eName', modal).value.trim();
+    const kcal = Number($('#eKcal', modal).value);
+    if (!name) { toast('请填写标签名称', 'err'); return; }
+    if (!Number.isFinite(kcal) || kcal < 0 || $('#eKcal', modal).value === '') { toast('请填写消耗热量', 'err'); return; }
+    if (isEdit) {
+      try { await api('DELETE', `/api/health/exercises/${existing.id}`); } catch { /* ignore */ }
+    }
+    try {
+      await api('POST', '/api/health/exercises', {
+        name,
+        kcal: Math.round(kcal),
+        minutes: $('#eMin', modal).value === '' ? null : Number($('#eMin', modal).value),
+      });
+      closeModal();
+      await refresh();
+      toast('标签已保存', 'ok');
+    } catch (err) { fail(err); }
+  });
+}
+
+async function deleteTag(kind, id) {
+  const label = kind === 'food' ? '这个食物标签' : '这个运动标签';
+  const yes = await askConfirm({
+    title: '删除自定义标签',
+    message: `确定删除${label}吗？已经记下的账不会受影响，只是以后这一排里不再显示它。`,
+    okText: '删除',
+  });
+  if (yes !== 'ok') return;
+  try {
+    await api('DELETE', `/api/health/${kind === 'food' ? 'foods' : 'exercises'}/${id}`);
+    await refresh();
+    toast('标签已删除', 'ok');
+  } catch (err) { fail(err); }
+}
+
+/* ---------------- 手动记录（可同时存成常用标签） ---------------- */
+
+function intakeModal() {
+  const modal = openModal(modalShell({
+    title: '手动记录摄入',
+    okText: '记录',
+    body: `
+      <div class="field">
+        <label>吃了什么</label>
+        <input class="input" id="mName" maxlength="60" placeholder="例如：食堂的番茄炒蛋">
+      </div>
+      <div class="field">
+        <label>热量（千卡）</label>
+        <input class="input" id="mKcal" type="number" min="0" max="10000" placeholder="例如 220">
+      </div>
+      <div class="field">
+        <label>三大营养素含量（克，可不填）</label>
+        <div class="row-inline">
+          <div class="field"><input class="input" id="mProtein" type="number" step="0.1" min="0" placeholder="蛋白质"></div>
+          <div class="field"><input class="input" id="mCarbs" type="number" step="0.1" min="0" placeholder="碳水"></div>
+          <div class="field"><input class="input" id="mFat" type="number" step="0.1" min="0" placeholder="脂肪"></div>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="mSaveTag"> 同时存成常用标签，下次点一下就能记</label>`,
+  }));
+  setTimeout(() => $('#mName', modal).focus(), 40);
+
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const name = $('#mName', modal).value.trim() || '手动填写';
+    const kcalRaw = $('#mKcal', modal).value;
+    const kcal = Number(kcalRaw);
+    if (kcalRaw === '' || !Number.isFinite(kcal) || kcal < 0) { toast('请填写热量', 'err'); return; }
+    const macros = {
+      proteinG: $('#mProtein', modal).value || 0,
+      carbsG: $('#mCarbs', modal).value || 0,
+      fatG: $('#mFat', modal).value || 0,
+    };
+    try {
+      if ($('#mSaveTag', modal).checked) {
+        await api('POST', '/api/health/foods', { name, kcal: Math.round(kcal), ...macros });
+      }
+      await api('POST', '/api/health/intake', { name, kcal: Math.round(kcal), ...macros });
+      closeModal();
+      await refresh();
+      toast(`已记录 ${name} ${Math.round(kcal)} 千卡`, 'ok');
+    } catch (err) { fail(err); }
+  });
+}
+
+function burnModal() {
+  const modal = openModal(modalShell({
+    title: '手动记录消耗',
+    okText: '记录',
+    body: `
+      <div class="field">
+        <label>做了什么运动</label>
+        <input class="input" id="bName" maxlength="60" placeholder="例如：打了一小时球">
+      </div>
+      <div class="row-inline">
+        <div class="field">
+          <label>消耗（千卡）</label>
+          <input class="input" id="bKcal" type="number" min="0" max="10000" placeholder="例如 320">
+        </div>
+        <div class="field">
+          <label>时长（分钟，可不填）</label>
+          <input class="input" id="bMin" type="number" min="0" max="1440" placeholder="例如 60">
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="bSaveTag"> 同时存成常用标签</label>`,
+  }));
+  setTimeout(() => $('#bName', modal).focus(), 40);
+
+  modal.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-modal]');
+    if (!act) return;
+    if (act.dataset.modal === 'cancel') { closeModal(); return; }
+    const name = $('#bName', modal).value.trim() || '手动填写';
+    const kcalRaw = $('#bKcal', modal).value;
+    const kcal = Number(kcalRaw);
+    if (kcalRaw === '' || !Number.isFinite(kcal) || kcal < 0) { toast('请填写消耗热量', 'err'); return; }
+    const minutes = $('#bMin', modal).value === '' ? null : Number($('#bMin', modal).value);
+    try {
+      if ($('#bSaveTag', modal).checked) {
+        await api('POST', '/api/health/exercises', { name, kcal: Math.round(kcal), minutes });
+      }
+      await api('POST', '/api/health/burn', { name, kcal: Math.round(kcal), minutes });
+      closeModal();
+      await refresh();
+      toast(`已记录 ${name} −${Math.round(kcal)} 千卡`, 'ok');
     } catch (err) { fail(err); }
   });
 }
@@ -1664,38 +2070,32 @@ function bind() {
   });
 
   $('#foodPresets').addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del-tag]');
+    if (del) { e.stopPropagation(); deleteTag('food', del.dataset.delTag); return; }
     const b = e.target.closest('[data-food]');
     if (!b) return;
-    const p = FOOD_PRESETS[Number(b.dataset.food)];
-    addIntake(p.name, foodKcal(p));
+    const tag = allFoodTags().find((t) => t.id === b.dataset.food);
+    if (tag) addIntake(tag.name, tag.kcal, tag);
   });
 
   $('#burnPresets').addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del-tag]');
+    if (del) { e.stopPropagation(); deleteTag('exercise', del.dataset.delTag); return; }
     const b = e.target.closest('[data-ex]');
     if (!b) return;
-    const p = EXERCISE_PRESETS[Number(b.dataset.ex)];
+    const tag = allExerciseTags().find((t) => t.id === b.dataset.ex);
+    if (!tag) return;
+    if (!tag.builtin && !tag.kcal) { /* 自定义标签自带热量，直接用 */ }
     const w = S.health.computed ? S.health.computed.latestWeightKg : null;
-    if (!w) { toast('先记录一次体重才能估算消耗', 'err'); return; }
-    addBurn(p.name, exerciseKcal(p.met, w), PRESET_MINUTES);
+    const kcal = tag.builtin ? exerciseKcal(tag.met, w) : tag.kcal;
+    if (!kcal) { toast('先记录一次体重才能估算消耗', 'err'); return; }
+    addBurn(tag.name, kcal, tag.minutes);
   });
 
-  $('#btnAddIntake').addEventListener('click', () => {
-    const kcal = Number($('#intakeKcal').value);
-    if (!Number.isFinite(kcal) || kcal <= 0) { toast('请填写千卡数', 'err'); return; }
-    const name = $('#intakeName').value.trim() || '手动填写';
-    $('#intakeKcal').value = '';
-    $('#intakeName').value = '';
-    addIntake(name, Math.round(kcal));
-  });
-
-  $('#btnAddBurn').addEventListener('click', () => {
-    const kcal = Number($('#burnKcal').value);
-    if (!Number.isFinite(kcal) || kcal <= 0) { toast('请填写千卡数', 'err'); return; }
-    const name = $('#burnName').value.trim() || '手动填写';
-    $('#burnKcal').value = '';
-    $('#burnName').value = '';
-    addBurn(name, Math.round(kcal), null);
-  });
+  $('#btnNewFoodTag').addEventListener('click', () => foodTagModal(null));
+  $('#btnManualIntake').addEventListener('click', intakeModal);
+  $('#btnNewExerciseTag').addEventListener('click', () => exerciseTagModal(null));
+  $('#btnManualBurn').addEventListener('click', burnModal);
 
   $('#intakeList').addEventListener('click', (e) => {
     const row = e.target.closest('.log-row');

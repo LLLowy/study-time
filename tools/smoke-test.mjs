@@ -1,9 +1,15 @@
 /**
- * 冒烟测试：把三大模块的主要接口串一遍。
- * 用法：先启动 server.js，然后 node tools/smoke-test.mjs [端口]
+ * 冒烟测试：把四大模块的主要接口串一遍。
+ *
+ * 用法：先启动 server.js，然后
+ *   node tools/smoke-test.mjs [端口]
+ *
+ * 安全设计：测试会反复增删数据。如果检测到库里已经有真实内容，
+ * 默认直接拒绝运行，避免动到你的数据。确实要在有数据的库上跑，
+ * 请先备份再加 --force。
  */
 
-const PORT = Number(process.argv[2] || 7788);
+const PORT = Number(process.argv.slice(2).find((a) => /^\d+$/.test(a)) || 7788);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 let pass = 0;
@@ -37,6 +43,7 @@ function eq(label, actual, expected) {
 }
 
 async function main() {
+  const FORCE = process.argv.includes('--force');
   console.log(`\n对 ${BASE} 运行冒烟测试\n`);
 
   // 取基线：测试对已有数据保持增量断言，可反复运行
@@ -46,10 +53,41 @@ async function main() {
     console.error('测试需要独占倒计时接口，请先在界面上结束它，然后重新运行测试。\n');
     process.exit(1);
   }
+
+  // 安全闸：有真实数据时必须显式加 --force 才继续。
+  // 测试会临时清空并尽量还原，但记录 id 会变、数组顺序也可能变，
+  // 所以默认拒绝在有数据的库上跑，避免动到真实内容。
+  const h0pre = base.health;
+  const itemCount = base.tasks.length + base.sessions.length + base.inspirations.length
+    + base.notebooks.length + base.notes.length
+    + h0pre.weights.length + h0pre.intake.length + h0pre.burn.length + h0pre.water.length
+    + (h0pre.customFoods || []).length + (h0pre.customBurns || []).length
+    + (h0pre.profile ? 1 : 0);
+  if (itemCount > 0 && !FORCE) {
+    console.error(`\n这个库里已经有 ${itemCount} 条真实数据（任务 ${base.tasks.length}、学习记录 ${base.sessions.length}、`);
+    console.error(`灵感 ${base.inspirations.length}、笔记 ${base.notes.length}、身体记录 ${h0pre.weights.length + h0pre.intake.length + h0pre.burn.length + h0pre.water.length}）。`);
+
+    console.error('\n冒烟测试要反复增删记录才能验证，跑一次会让这个库里的记录被重建：');
+    console.error('  · 内容不会丢，但记录 id 和创建时间会变');
+    console.error('  · 身体数据会被清空后重新写回');
+    console.error('\n推荐做法：复制一份项目到别的目录，在副本里跑（副本里的 data 是空的，随便测）。');
+    console.error('确实要在有数据的库上跑，就先确认已备份，再加 --force：');
+    console.error(`  node tools/smoke-test.mjs ${PORT} --force\n`);
+    process.exit(1);
+  }
+  if (itemCount > 0) {
+    console.log(`  ⚠ --force：库里已有 ${itemCount} 条数据，测试会清空后重新写回（内容保留，id 与时间戳会变）\n`);
+  }
+
   const baseNotebooks = base.notebooks.length;
   const baseNotes = base.notes.length;
   const baseTasks = base.tasks.length;
   const baseSessions = base.sessions.length;
+  const baseTaskIds = new Set(base.tasks.map((t) => t.id));
+  const baseSessionIds = new Set(base.sessions.map((s) => s.id));
+  const baseNotebookIds = new Set(base.notebooks.map((n) => n.id));
+  const baseNoteIds = new Set(base.notes.map((n) => n.id));
+  const baseInspirationIds = new Set(base.inspirations.map((i) => i.id));
 
   /* ---------- 1. 笔记本与笔记 ---------- */
   console.log('【笔记：树形笔记本】');
@@ -203,13 +241,17 @@ async function main() {
   console.log('\n【身体管理：档案与基础代谢】');
   // 这一块需要从空白开始，所以先把已有身体数据挪走，测完再原样放回去
   const h0 = (await call('GET', '/api/all')).health;
-  const hadCount = h0.weights.length + h0.intake.length + h0.burn.length + h0.water.length + (h0.profile ? 1 : 0);
+  const hadCount = h0.weights.length + h0.intake.length + h0.burn.length + h0.water.length
+    + (h0.customFoods || []).length + (h0.customBurns || []).length + (h0.profile ? 1 : 0);
   if (hadCount) console.log(`  （检测到已有身体数据 ${hadCount} 条，测试会临时清空，结束时还原）`);
   for (const r of h0.weights) await call('DELETE', `/api/health/weights/${r.id}`);
   for (const r of h0.intake) await call('DELETE', `/api/health/intake/${r.id}`);
   for (const r of h0.burn) await call('DELETE', `/api/health/burn/${r.id}`);
   for (const r of h0.water) await call('DELETE', `/api/health/water/${r.id}`);
+  for (const f of (h0.customFoods || [])) await call('DELETE', `/api/health/foods/${f.id}`);
+  for (const e of (h0.customBurns || [])) await call('DELETE', `/api/health/exercises/${e.id}`);
   await call('DELETE', '/api/health/profile');
+  await call('PATCH', '/api/health/goals', { macros: { proteinG: null, carbsG: null, fatG: null } });
 
   let needProfile = false;
   try { await call('POST', '/api/health/weights', { kg: 70 }); } catch { needProfile = true; }
@@ -292,14 +334,120 @@ async function main() {
   await call('DELETE', `/api/health/intake/${i1.id}`);
   eq('摄入记录可删除', (await call('GET', '/api/all')).health.today.intakeKcal, 133);
 
+  /* ---------- 5b. 三大营养素 ---------- */
+  console.log('\n【身体管理：三大营养素】');
+  // 清掉刚记的，从零开始算
+  for (const r of (await call('GET', '/api/all')).health.intake) {
+    await call('DELETE', `/api/health/intake/${r.id}`);
+  }
+  await call('POST', '/api/health/intake', { name: '米饭 1 碗', kcal: 200, proteinG: 4, carbsG: 44, fatG: 0.4 });
+  await call('POST', '/api/health/intake', { name: '鸡胸肉 100g', kcal: 133, proteinG: 25, carbsG: 0, fatG: 3 });
+  const mh = (await call('GET', '/api/all')).health;
+  eq('蛋白质今日合计正确', mh.macros.today.proteinG, 29);
+  eq('碳水今日合计正确', mh.macros.today.carbsG, 44);
+  eq('脂肪今日合计正确', mh.macros.today.fatG, 3.4);
+  eq('蛋白质供能 = 克数 × 4', mh.macros.kcal.proteinG, 116);
+  eq('碳水供能 = 克数 × 4', mh.macros.kcal.carbsG, 176);
+  eq('脂肪供能 = 克数 × 9', mh.macros.kcal.fatG, 31);
+  eq('三大营养素供能合计正确', mh.macros.kcalTotal, 116 + 176 + 31);
+  eq('达标状态有 3 项', mh.macros.status.length, 3);
+
+  // 建议目标：蛋白质 1.6 g/kg，脂肪占 25% 热量，其余给碳水
+  const w = mh.computed.latestWeightKg;
+  const tdee = mh.computed.tdee;
+  const sugP = Math.round(w * 1.6);
+  const sugF = Math.round((tdee * 0.25) / 9);
+  const sugC = Math.max(0, Math.round((tdee - sugP * 4 - sugF * 9) / 4));
+  eq('系统建议蛋白质 = 体重 × 1.6', mh.macros.suggested.proteinG, sugP);
+  eq('系统建议脂肪 = TDEE × 25% ÷ 9', mh.macros.suggested.fatG, sugF);
+  eq('系统建议碳水 = 剩余热量 ÷ 4', mh.macros.suggested.carbsG, sugC);
+  eq('没自己设目标时用建议值', mh.macros.targets.source, 'suggested');
+  eq('生效的蛋白质目标 = 建议值', mh.macros.targets.proteinG, sugP);
+
+  const one = mh.macros.status.find((s) => s.key === 'proteinG');
+  eq('达标进度百分比计算正确', one.percent, Math.round((29 / sugP) * 100));
+  eq('未达标时 reached 为 false', one.reached, false);
+  check('未达标时给出还差多少克', one.remainG === Math.round((sugP - 29) * 10) / 10, `（${one.remainG}）`);
+
+  const custom = (await call('PATCH', '/api/health/goals', { macros: { proteinG: 20, carbsG: 50, fatG: 10 } })).health;
+  eq('可以自己设定蛋白质目标', custom.macros.targets.proteinG, 20);
+  eq('自设目标后 source 变成 custom', custom.macros.targets.source, 'custom');
+  const p2 = custom.macros.status.find((s) => s.key === 'proteinG');
+  eq('按自设目标重新判定达标', p2.reached, true);
+  eq('达标后剩余为 0', p2.remainG, 0);
+
+  const restored2 = (await call('PATCH', '/api/health/goals', { macros: { proteinG: null, carbsG: null, fatG: null } })).health;
+  eq('目标传 null 可以改回用建议值', restored2.macros.targets.source, 'suggested');
+
+  let badMacro = false;
+  try { await call('PATCH', '/api/health/goals', { macros: { proteinG: -3 } }); } catch { badMacro = true; }
+  check('拒绝负数营养素目标', badMacro);
+  let badIntakeMacro = false;
+  try { await call('POST', '/api/health/intake', { kcal: 100, proteinG: -1 }); } catch { badIntakeMacro = true; }
+  check('拒绝负数营养素含量', badIntakeMacro);
+
+  /* ---------- 5c. 自定义标签 ---------- */
+  console.log('\n【身体管理：自定义标签】');
+  const cf = (await call('POST', '/api/health/foods', {
+    name: '食堂三两米饭', kcal: 260, proteinG: 5, carbsG: 57, fatG: 0.5,
+  })).food;
+  eq('自定义食物标签名称保存正确', cf.name, '食堂三两米饭');
+  eq('自定义食物标签营养素保存正确', cf.proteinG, 5);
+  let foods = (await call('GET', '/api/all')).health.customFoods;
+  eq('自定义食物标签出现在列表里', foods.length, 1);
+  eq('自定义食物标签热量正确', foods[0].kcal, 260);
+
+  const ce = (await call('POST', '/api/health/exercises', { name: '游泳 1000 米', kcal: 320, minutes: 40 })).exercise;
+  eq('自定义运动标签保存正确', ce.name, '游泳 1000 米');
+  let exs = (await call('GET', '/api/all')).health.customBurns;
+  eq('自定义运动标签出现在列表里', exs.length, 1);
+  eq('自定义运动标签保留分钟数', exs[0].minutes, 40);
+
+  let badTag = false;
+  try { await call('POST', '/api/health/foods', { name: '  ', kcal: 100 }); } catch { badTag = true; }
+  check('拒绝空名称的标签', badTag);
+  let badTagKcal = false;
+  try { await call('POST', '/api/health/foods', { name: '测试', kcal: -1 }); } catch { badTagKcal = true; }
+  check('拒绝负数热量的标签', badTagKcal);
+
+  await call('DELETE', `/api/health/foods/${cf.id}`);
+  eq('自定义食物标签可删除', (await call('GET', '/api/all')).health.customFoods.length, 0);
+  await call('DELETE', `/api/health/exercises/${ce.id}`);
+  eq('自定义运动标签可删除', (await call('GET', '/api/all')).health.customBurns.length, 0);
+  let badDel = false;
+  try { await call('DELETE', `/api/health/foods/${cf.id}`); } catch { badDel = true; }
+  check('删除已不存在的标签会报错', badDel);
+
   // 清理测试产生的东西，并把之前挪走的数据放回去
   const after = (await call('GET', '/api/all')).health;
   for (const r of after.intake) await call('DELETE', `/api/health/intake/${r.id}`);
   for (const r of after.burn) await call('DELETE', `/api/health/burn/${r.id}`);
   for (const r of after.water) await call('DELETE', `/api/health/water/${r.id}`);
   for (const r of after.weights) await call('DELETE', `/api/health/weights/${r.id}`);
+  for (const f of (await call('GET', '/api/all')).health.customFoods) {
+    await call('DELETE', `/api/health/foods/${f.id}`);
+  }
+  for (const e of (await call('GET', '/api/all')).health.customBurns) {
+    await call('DELETE', `/api/health/exercises/${e.id}`);
+  }
   await call('DELETE', '/api/health/profile');
   await call('PATCH', '/api/health/goals', { waterMl: h0.goals.waterMl, burnKcal: h0.goals.burnKcal });
+  const h0m = h0.goals.macros || {};
+  await call('PATCH', '/api/health/goals', {
+    macros: {
+      proteinG: h0m.proteinG ?? null,
+      carbsG: h0m.carbsG ?? null,
+      fatG: h0m.fatG ?? null,
+    },
+  });
+  for (const f of (h0.customFoods || [])) {
+    await call('POST', '/api/health/foods', {
+      name: f.name, kcal: f.kcal, proteinG: f.proteinG, carbsG: f.carbsG, fatG: f.fatG,
+    });
+  }
+  for (const e of (h0.customBurns || [])) {
+    await call('POST', '/api/health/exercises', { name: e.name, kcal: e.kcal, minutes: e.minutes });
+  }
   if (h0.profile) {
     await call('PUT', '/api/health/profile', {
       gender: h0.profile.gender,
@@ -309,14 +457,34 @@ async function main() {
       targetWeightKg: h0.profile.targetWeightKg,
     });
   }
+  // 体重是 push（追加），按原顺序放回
   for (const w of h0.weights) await call('POST', '/api/health/weights', { kg: w.kg, date: w.date, note: w.note });
-  for (const r of h0.intake) await call('POST', '/api/health/intake', { name: r.name, kcal: r.kcal, date: r.date });
-  for (const r of h0.burn) await call('POST', '/api/health/burn', { name: r.name, kcal: r.kcal, minutes: r.minutes, date: r.date });
-  for (const r of h0.water) await call('POST', '/api/health/water', { ml: r.ml, date: r.date });
+  // 摄入/消耗/喝水是 unshift（插到最前），要倒着放才能还原原来的顺序
+  for (const r of [...h0.intake].reverse()) {
+    await call('POST', '/api/health/intake', {
+      name: r.name,
+      kcal: r.kcal,
+      date: r.date,
+      proteinG: r.proteinG || 0,
+      carbsG: r.carbsG || 0,
+      fatG: r.fatG || 0,
+    });
+  }
+  for (const r of [...h0.burn].reverse()) {
+    await call('POST', '/api/health/burn', { name: r.name, kcal: r.kcal, minutes: r.minutes, date: r.date });
+  }
+  for (const r of [...h0.water].reverse()) {
+    await call('POST', '/api/health/water', { ml: r.ml, date: r.date });
+  }
   const cleaned = (await call('GET', '/api/all')).health;
   eq('测试数据已清理（体重）', cleaned.weights.length, h0.weights.length);
   eq('测试数据已清理（摄入）', cleaned.intake.length, h0.intake.length);
   eq('测试数据已清理（喝水）', cleaned.water.length, h0.water.length);
+  eq('自定义标签已还原', cleaned.customFoods.length, (h0.customFoods || []).length);
+  eq('自定义运动标签已还原', cleaned.customBurns.length, (h0.customBurns || []).length);
+  eq('营养素目标已还原',
+    JSON.stringify(cleaned.goals.macros),
+    JSON.stringify(h0.goals.macros || { proteinG: null, carbsG: null, fatG: null }));
   eq('原有档案已还原', Boolean(cleaned.profile), Boolean(h0.profile));
   void before;
 
@@ -400,6 +568,44 @@ async function main() {
   check('首页引用了 Markdown 渲染器', html2.includes('/markdown.js'));
   const trav = await fetch(`${BASE}/../server.js`);
   check('阻止目录穿越读取', trav.status === 404 || trav.status === 403, `状态 ${trav.status}`);
+
+  /* ---------- 9. 收尾清理：删掉本次测试产生的一切 ---------- */
+  console.log('\n【收尾清理】');
+  const end = await call('GET', '/api/all');
+
+  let cleanedSessions = 0;
+  for (const s of end.sessions) {
+    if (!baseSessionIds.has(s.id)) { await call('DELETE', `/api/sessions/${s.id}`); cleanedSessions += 1; }
+  }
+  let cleanedTasks = 0;
+  for (const t of end.tasks) {
+    if (!baseTaskIds.has(t.id)) { await call('DELETE', `/api/tasks/${t.id}`); cleanedTasks += 1; }
+  }
+  let cleanedNotes = 0;
+  for (const n of end.notes) {
+    if (!baseNoteIds.has(n.id)) { await call('DELETE', `/api/notes/${n.id}`); cleanedNotes += 1; }
+  }
+  let cleanedNb = 0;
+  for (const nb of end.notebooks) {
+    if (!baseNotebookIds.has(nb.id)) {
+      await call('DELETE', `/api/notebooks/${nb.id}`, {});
+      cleanedNb += 1;
+    }
+  }
+  let cleanedInsp = 0;
+  for (const i of end.inspirations) {
+    if (!baseInspirationIds.has(i.id)) { await call('DELETE', `/api/inspirations/${i.id}`); cleanedInsp += 1; }
+  }
+
+  const final = await call('GET', '/api/all');
+  eq('测试自己造的学习记录已全部清掉', final.sessions.length, baseSessions);
+  eq('测试自己造的任务已全部清掉', final.tasks.length, baseTasks);
+  eq('测试自己造的笔记已全部清掉', final.notes.length, baseNotes);
+  eq('测试自己造的笔记本已全部清掉', final.notebooks.length, baseNotebooks);
+  eq('测试自己造的灵感已全部清掉', final.inspirations.length, base.inspirations.length);
+  if (cleanedSessions + cleanedTasks + cleanedNotes + cleanedNb + cleanedInsp > 0) {
+    console.log(`  （本次清掉：记录 ${cleanedSessions}、任务 ${cleanedTasks}、笔记 ${cleanedNotes}、笔记本 ${cleanedNb}、灵感 ${cleanedInsp}）`);
+  }
 
   console.log(`\n结果：${pass} 项通过，${failed} 项失败\n`);
   process.exit(failed ? 1 : 0);

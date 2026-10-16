@@ -10,6 +10,7 @@ backups/
 
 # 临时文件
 _shots/
+_testrun/
 *.tmp
 *.log
 *.broken-*
